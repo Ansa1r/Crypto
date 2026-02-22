@@ -1,1 +1,4 @@
 pytest
+argon2-cffi
+cryptography
+keyring
