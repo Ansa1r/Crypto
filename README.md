@@ -46,3 +46,11 @@
 - Sprint 6 — Экспорт/импорт, безопасное шеринг записей
 - Sprint 7 — Автоблокировка по неактивности, защита от скриншотов (по возможности)
 - Sprint 8 — Бэкапы, упаковка в .exe, Docker (опционально)
+
+```mermaid
+flowchart LR
+    GUI[GUI<br>] --> CORE[Core<br>]
+    CORE --> DB[Database<br>]
+    CORE --> EVT[Event<br>]
+    EVT --> GUI
+```
