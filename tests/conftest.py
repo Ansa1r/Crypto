@@ -1,15 +1,32 @@
 import pytest
 from pathlib import Path
 import sqlite3
-from unittest.mock import patch
 from src.database.db import DB_PATH, init_db, get_connection
 
-@pytest.fixture
-def temp_db_path(tmp_path):
-    return tmp_path / "test_cryptosafe.db"
+@pytest.fixture(scope="function")
+def test_db():
+    test_path = Path("test_cryptosafe.db")
+    global DB_PATH
+    original_path = DB_PATH
+    DB_PATH = test_path
+
+    if test_path.exists():
+        test_path.unlink()
+    init_db()
+
+    yield test_path
+
+    if test_path.exists():
+        test_path.unlink()
+    DB_PATH = original_path
+
 
 @pytest.fixture
-def temp_db(temp_db_path, monkeypatch):
-    monkeypatch.setattr("src.database.db.DB_PATH", str(temp_db_path))
-    init_db()
-    yield temp_db_path
+def placeholder_key():
+    return b'placeholder_key'
+
+
+@pytest.fixture
+def crypto_service():
+    from src.core.crypto.placeholder import AES256Placeholder
+    return AES256Placeholder()

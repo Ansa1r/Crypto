@@ -1,3 +1,4 @@
+src/gui/cryptosafe.db
 __pycache__/
 *.py[cod]
 *.pyc
@@ -15,6 +16,7 @@ venv/
 *.sqlite
 *.sqlite3
 *.log
+test_*.db
 
 .coverage
 htmlcov/
