@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QPushButton, QLabel, QLineEdit,
     QTreeWidget, QTreeWidgetItem, QMessageBox, QDialog,
     QMenuBar, QMenu, QStatusBar, QDialogButtonBox,
-    QFrame, QHeaderView
+    QFrame, QHeaderView, QFileDialog, QSpinBox
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QAction, QFont, QIcon
@@ -28,6 +28,10 @@ except ImportError:
 state_manager = StateManager()
 event_bus = EventBus()
 
+from src.gui.widgets.password_entry import PasswordEntry
+from src.gui.widgets.secure_table import SecureTable
+from src.gui.widgets.audit_log_viewer import AuditLogViewer
+from src.gui.settings_dialog import SettingsDialog
 
 class UnlockDialog(QDialog):
     def __init__(self, parent=None):
@@ -42,8 +46,7 @@ class UnlockDialog(QDialog):
         label.setFont(QFont("Helvetica", 11))
         layout.addWidget(label, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        self.password_input = QLineEdit()
-        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password_input = PasswordEntry()
         self.password_input.setFixedWidth(300)
         layout.addWidget(self.password_input, alignment=Qt.AlignmentFlag.AlignCenter)
 
@@ -54,7 +57,7 @@ class UnlockDialog(QDialog):
         layout.addWidget(button_box, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.setLayout(layout)
-        self.password_input.setFocus()
+        self.password_input.entry.setFocus()
 
     def get_password(self):
         return self.password_input.text() if self.exec() == QDialog.DialogCode.Accepted else None
@@ -64,7 +67,7 @@ class FirstRunDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Первый запуск — создание хранилища")
-        self.setFixedSize(480, 320)
+        self.setFixedSize(480, 420)
         self.setModal(True)
 
         layout = QVBoxLayout()
@@ -73,8 +76,7 @@ class FirstRunDialog(QDialog):
         title.setFont(QFont("Helvetica", 11))
         layout.addWidget(title, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        self.password_input = QLineEdit()
-        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password_input = PasswordEntry()
         self.password_input.setFixedWidth(300)
         layout.addWidget(self.password_input, alignment=Qt.AlignmentFlag.AlignCenter)
 
@@ -82,10 +84,31 @@ class FirstRunDialog(QDialog):
         confirm_label.setFont(QFont("Helvetica", 11))
         layout.addWidget(confirm_label, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        self.confirm_input = QLineEdit()
-        self.confirm_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.confirm_input = PasswordEntry()
         self.confirm_input.setFixedWidth(300)
         layout.addWidget(self.confirm_input, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        db_label = QLabel("Выберите путь к базе данных:")
+        db_label.setFont(QFont("Helvetica", 11))
+        layout.addWidget(db_label, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        db_layout = QHBoxLayout()
+        self.db_path_input = QLineEdit()
+        self.db_path_input.setFixedWidth(250)
+        db_layout.addWidget(self.db_path_input)
+        browse_btn = QPushButton("Browse...")
+        browse_btn.clicked.connect(self.browse_db_path)
+        db_layout.addWidget(browse_btn)
+        layout.addLayout(db_layout)
+
+        settings_label = QLabel("Encryption settings (placeholder):")
+        settings_label.setFont(QFont("Helvetica", 11))
+        layout.addWidget(settings_label, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        self.iterations_spin = QSpinBox()
+        self.iterations_spin.setRange(100000, 1000000)
+        self.iterations_spin.setValue(600000)
+        layout.addWidget(self.iterations_spin, alignment=Qt.AlignmentFlag.AlignCenter)
 
         button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
                                       QDialogButtonBox.StandardButton.Cancel)
@@ -94,12 +117,18 @@ class FirstRunDialog(QDialog):
         layout.addWidget(button_box, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.setLayout(layout)
-        self.password_input.setFocus()
+        self.password_input.entry.setFocus()
 
-    def get_passwords(self):
+    def browse_db_path(self):
+        path = QFileDialog.getSaveFileName(self, "Select DB Path", "", "SQLite DB (*.db)")[0]
+        if path:
+            self.db_path_input.setText(path)
+
+    def get_data(self):
         if self.exec() == QDialog.DialogCode.Accepted:
-            return self.password_input.text(), self.confirm_input.text()
-        return None, None
+            return (self.password_input.text(), self.confirm_input.text(),
+                    self.db_path_input.text(), self.iterations_spin.value())
+        return None, None, None, None
 
 
 class CryptoSafeMainWindow(QMainWindow):
@@ -240,26 +269,20 @@ class CryptoSafeMainWindow(QMainWindow):
         self.update_status()
 
     def _show_unlocked_content(self):
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Title", "Username", "URL", "Last Updated"])
-        self.tree.setColumnWidth(0, 220)
-        self.tree.setColumnWidth(1, 180)
-        self.tree.setColumnWidth(2, 280)
-        self.tree.setColumnWidth(3, 140)
-
+        self.table = SecureTable()
         self._fill_test_data()
-        self.layout.addWidget(self.tree)
+        self.layout.addWidget(self.table)
 
     def _fill_test_data(self):
         test_data = [
-            ("Google", "max123@gmail.com", "https://accounts.google.com", "2025-02-10"),
-            ("GitHub", "Ansa1r", "https://github.com/login", "2025-01-28"),
-            ("Bank", "user456", "https://online.bank.ru", "2024-12-15"),
+            ("Google", "max123@gmail.com", "https://accounts.google.com", "Main email", "2025-02-10"),
+            ("GitHub", "Ansa1r", "https://github.com/login", "Dev account", "2025-01-28"),
+            ("Bank", "user456", "https://online.bank.ru", "Financial", "2024-12-15"),
         ]
 
         for item_data in test_data:
             item = QTreeWidgetItem(item_data)
-            self.tree.addTopLevelItem(item)
+            self.table.addTopLevelItem(item)
 
     def update_status(self):
         if state_manager.is_locked:
@@ -289,7 +312,7 @@ class CryptoSafeMainWindow(QMainWindow):
 
     def first_run_setup(self):
         dialog = FirstRunDialog(self)
-        password, confirm = dialog.get_passwords()
+        password, confirm, db_path, iterations = dialog.get_data()
 
         if password is not None:
             if not password or not confirm:
@@ -309,9 +332,11 @@ class CryptoSafeMainWindow(QMainWindow):
                 if reply == QMessageBox.StandardButton.No:
                     return
 
+            db_path = db_path or "cryptosafe.db"
+
             try:
-                open("cryptosafe.db", "a").close()
-                QMessageBox.information(self, "Успех", "Хранилище создано!\nТеперь можно разблокировать.")
+                open(db_path, "a").close()
+                QMessageBox.information(self, "Успех", f"Хранилище создано по пути {db_path}!\nIterations: {iterations}\nТеперь можно разблокировать.")
                 self._check_lock_state()
             except Exception as e:
                 QMessageBox.critical(self, "Ошибка", f"Не удалось создать файл базы:\n{e}")
@@ -335,10 +360,12 @@ class CryptoSafeMainWindow(QMainWindow):
         QMessageBox.information(self, "Action", "Delete Entry — stub")
 
     def show_audit_log(self):
-        QMessageBox.information(self, "Action", "Audit Log — stub (Sprint 5)")
+        viewer = AuditLogViewer(self)
+        viewer.exec()
 
     def show_settings(self):
-        QMessageBox.information(self, "Action", "Settings — stub")
+        dialog = SettingsDialog(self)
+        dialog.exec()
 
     def show_about(self):
         QMessageBox.about(
@@ -362,7 +389,7 @@ class CryptoSafeMainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
-    app.setStyle('Fusion')  # Modern look
+    app.setStyle('Fusion')
 
     window = CryptoSafeMainWindow()
     window.show()
