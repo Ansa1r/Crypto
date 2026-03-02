@@ -3,9 +3,6 @@ import secrets
 
 
 class KeyManager:
-    """
-    Placeholder key manager for Sprint 1.
-    """
 
     def derive_key(self, password: str, salt: bytes) -> bytes:
         return hashlib.sha256(password.encode() + salt).digest()

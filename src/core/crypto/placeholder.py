@@ -2,10 +2,6 @@ from .abstract import EncryptionService
 
 
 class AES256Placeholder(EncryptionService):
-    """
-    Placeholder encryption using XOR.
-    DO NOT use in production.
-    """
 
     def encrypt(self, data: bytes, key: bytes) -> bytes:
         return self._xor(data, key)

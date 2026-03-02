@@ -3,7 +3,6 @@ import secrets
 import gc
 from typing import Optional, Union
 
-
 def secure_zero_bytes(data: Optional[bytes]) -> None:
     if data is None or len(data) == 0:
         return

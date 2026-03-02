@@ -1,31 +1,18 @@
 import sqlite3
 from pathlib import Path
 
-# Путь к базе данных (пока рядом с проектом)
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DB_PATH = BASE_DIR / "cryptosafe.db"
 
-
 def get_connection():
-    """
-    Returns a connection to the SQLite database.
-    """
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
-
 def init_db():
-    """
-    Initializes database schema for Sprint 1.
-    """
     conn = get_connection()
     cursor = conn.cursor()
-
-    # Enable foreign keys
     cursor.execute("PRAGMA foreign_keys = ON;")
-
-    # Schema versioning
     cursor.execute("PRAGMA user_version;")
     version = cursor.fetchone()[0]
 
@@ -38,10 +25,6 @@ def init_db():
 
 
 def _create_initial_schema(cursor):
-    """
-    Creates initial tables required for Sprint 1.
-    """
-
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS vault_entries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -2,9 +2,6 @@ from pathlib import Path
 
 
 class ConfigManager:
-    """
-    Centralized configuration manager.
-    """
 
     def __init__(self):
         self.base_dir = Path(__file__).resolve().parent.parent.parent

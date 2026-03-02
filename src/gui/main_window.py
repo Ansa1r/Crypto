@@ -1,9 +1,15 @@
-import tkinter as tk
-from tkinter import ttk
-from tkinter import messagebox
-import os
 import sys
+import os
 import secrets
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout,
+    QHBoxLayout, QPushButton, QLabel, QLineEdit,
+    QTreeWidget, QTreeWidgetItem, QMessageBox, QDialog,
+    QMenuBar, QMenu, QStatusBar, QDialogButtonBox,
+    QFrame, QHeaderView
+)
+from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QAction, QFont, QIcon
 
 try:
     from src.core.state_manager import StateManager
@@ -13,100 +19,236 @@ except ImportError:
         def __init__(self):
             self.is_locked = True
             self.current_user = None
+
+
     class EventBus:
         def publish(self, event_name, data=None):
             print(f"[EVENT] {event_name} {data or ''}")
+
 state_manager = StateManager()
 event_bus = EventBus()
 
-class CryptoSafeMainWindow:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("CryptoSafe Manager")
-        self.root.geometry("900x600")
-        self.root.minsize(800, 500)
 
-        self.style = ttk.Style()
-        self.style.theme_use("clam")
+class UnlockDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Unlock Vault")
+        self.setFixedSize(420, 220)
+        self.setModal(True)
 
-        self.style.configure("TButton", padding=8, font=("Helvetica", 10))
-        self.style.configure("TLabel", font=("Helvetica", 11))
-        self.style.map("TButton",
-                       background=[("active", "#4a90e2")],
-                       foreground=[("active", "white")])
+        layout = QVBoxLayout()
+
+        label = QLabel("Enter master password:")
+        label.setFont(QFont("Helvetica", 11))
+        layout.addWidget(label, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password_input.setFixedWidth(300)
+        layout.addWidget(self.password_input, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
+                                      QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        self.setLayout(layout)
+        self.password_input.setFocus()
+
+    def get_password(self):
+        return self.password_input.text() if self.exec() == QDialog.DialogCode.Accepted else None
+
+
+class FirstRunDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Первый запуск — создание хранилища")
+        self.setFixedSize(480, 320)
+        self.setModal(True)
+
+        layout = QVBoxLayout()
+
+        title = QLabel("Придумайте мастер-пароль:")
+        title.setFont(QFont("Helvetica", 11))
+        layout.addWidget(title, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password_input.setFixedWidth(300)
+        layout.addWidget(self.password_input, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        confirm_label = QLabel("Подтвердите пароль:")
+        confirm_label.setFont(QFont("Helvetica", 11))
+        layout.addWidget(confirm_label, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        self.confirm_input = QLineEdit()
+        self.confirm_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.confirm_input.setFixedWidth(300)
+        layout.addWidget(self.confirm_input, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
+                                      QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        self.setLayout(layout)
+        self.password_input.setFocus()
+
+    def get_passwords(self):
+        if self.exec() == QDialog.DialogCode.Accepted:
+            return self.password_input.text(), self.confirm_input.text()
+        return None, None
+
+
+class CryptoSafeMainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("CryptoSafe Manager")
+        self.setMinimumSize(800, 500)
+        self.resize(900, 600)
 
         self._create_menu()
-        self._create_main_content()
         self._create_status_bar()
+
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.layout = QVBoxLayout(self.central_widget)
+
         self._check_lock_state()
-        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def _create_menu(self):
-        menubar = tk.Menu(self.root)
-        file_menu = tk.Menu(menubar, tearoff=0)
-        file_menu.add_command(label="New Vault...", command=self.new_vault)
-        file_menu.add_command(label="Open Vault...", command=self.open_vault)
-        file_menu.add_separator()
-        file_menu.add_command(label="Backup...", command=self.backup)
-        file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.on_closing)
-        menubar.add_cascade(label="File", menu=file_menu)
+        menubar = self.menuBar()
 
-        edit_menu = tk.Menu(menubar, tearoff=0)
-        edit_menu.add_command(label="Add Entry...", command=self.add_entry)
-        edit_menu.add_command(label="Edit Selected", command=self.edit_entry)
-        edit_menu.add_command(label="Delete Selected", command=self.delete_entry)
-        menubar.add_cascade(label="Edit", menu=edit_menu)
+        file_menu = menubar.addMenu("File")
 
-        view_menu = tk.Menu(menubar, tearoff=0)
-        view_menu.add_command(label="Show Audit Log", command=self.show_audit_log)
-        view_menu.add_command(label="Settings...", command=self.show_settings)
-        menubar.add_cascade(label="View", menu=view_menu)
+        new_vault_action = QAction("New Vault...", self)
+        new_vault_action.triggered.connect(self.new_vault)
+        file_menu.addAction(new_vault_action)
 
-        help_menu = tk.Menu(menubar, tearoff=0)
-        help_menu.add_command(label="About", command=self.show_about)
-        menubar.add_cascade(label="Help", menu=help_menu)
+        open_vault_action = QAction("Open Vault...", self)
+        open_vault_action.triggered.connect(self.open_vault)
+        file_menu.addAction(open_vault_action)
 
-        self.root.config(menu=menubar)
+        file_menu.addSeparator()
 
-    def _create_main_content(self):
-        main_frame = ttk.Frame(self.root)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        backup_action = QAction("Backup...", self)
+        backup_action.triggered.connect(self.backup)
+        file_menu.addAction(backup_action)
 
-        if state_manager.is_locked:
-            self.lock_frame = ttk.Frame(main_frame)
-            self.lock_frame.pack(fill=tk.BOTH, expand=True)
+        file_menu.addSeparator()
 
-            ttk.Label(
-                self.lock_frame,
-                text="CryptoSafe is Locked",
-                font=("Helvetica", 24, "bold")
-            ).pack(pady=80)
+        exit_action = QAction("Exit", self)
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
 
-            ttk.Label(
-                self.lock_frame,
-                text="Please enter your master password to unlock the vault.",
-                font=("Helvetica", 12)
-            ).pack(pady=10)
+        edit_menu = menubar.addMenu("Edit")
 
-            ttk.Button(
-                self.lock_frame,
-                text="Unlock Vault",
-                command=self.unlock_dialog
-            ).pack(pady=20)
+        add_entry_action = QAction("Add Entry...", self)
+        add_entry_action.triggered.connect(self.add_entry)
+        edit_menu.addAction(add_entry_action)
+
+        edit_entry_action = QAction("Edit Selected", self)
+        edit_entry_action.triggered.connect(self.edit_entry)
+        edit_menu.addAction(edit_entry_action)
+
+        delete_entry_action = QAction("Delete Selected", self)
+        delete_entry_action.triggered.connect(self.delete_entry)
+        edit_menu.addAction(delete_entry_action)
+
+        view_menu = menubar.addMenu("View")
+
+        audit_log_action = QAction("Show Audit Log", self)
+        audit_log_action.triggered.connect(self.show_audit_log)
+        view_menu.addAction(audit_log_action)
+
+        settings_action = QAction("Settings...", self)
+        settings_action.triggered.connect(self.show_settings)
+        view_menu.addAction(settings_action)
+
+        help_menu = menubar.addMenu("Help")
+
+        about_action = QAction("About", self)
+        about_action.triggered.connect(self.show_about)
+        help_menu.addAction(about_action)
+
+    def _create_status_bar(self):
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.update_status()
+
+    def _check_lock_state(self):
+        for i in reversed(range(self.layout.count())):
+            self.layout.itemAt(i).widget().setParent(None)
+
+        db_path = "cryptosafe.db"
+
+        if not os.path.exists(db_path):
+            self._show_first_run_screen()
+        elif state_manager.is_locked:
+            self._show_locked_screen()
         else:
-            columns = ("title", "username", "url", "updated")
-            self.tree = ttk.Treeview(main_frame, columns=columns, show="headings")
-            self.tree.heading("title", text="Title")
-            self.tree.heading("username", text="Username")
-            self.tree.heading("url", text="URL")
-            self.tree.heading("updated", text="Last Updated")
-            self.tree.column("title", width=220, anchor="w")
-            self.tree.column("username", width=180)
-            self.tree.column("url", width=280)
-            self.tree.column("updated", width=140)
-            self.tree.pack(fill=tk.BOTH, expand=True)
-            self._fill_test_data()
+            self._show_unlocked_content()
+
+        self.update_status()
+
+    def _show_first_run_screen(self):
+        frame = QFrame()
+        layout = QVBoxLayout(frame)
+
+        title = QLabel("Добро пожаловать в CryptoSafe Manager!")
+        title.setFont(QFont("Helvetica", 20, QFont.Weight.Bold))
+        layout.addWidget(title, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        message = QLabel(
+            "Это первый запуск.\nСейчас приложение создаст зашифрованную базу данных.\n"
+            "Придумайте надёжный мастер-пароль."
+        )
+        message.setFont(QFont("Helvetica", 12))
+        message.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(message)
+
+        create_btn = QPushButton("Создать хранилище")
+        create_btn.setFixedWidth(200)
+        create_btn.clicked.connect(self.first_run_setup)
+        layout.addWidget(create_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        layout.addStretch()
+        self.layout.addWidget(frame)
+        self.status_bar.showMessage("First run — setup required")
+
+    def _show_locked_screen(self):
+        frame = QFrame()
+        layout = QVBoxLayout(frame)
+
+        title = QLabel("CryptoSafe is Locked")
+        title.setFont(QFont("Helvetica", 24, QFont.Weight.Bold))
+        layout.addWidget(title, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        message = QLabel("Введите мастер-пароль для разблокировки хранилища")
+        message.setFont(QFont("Helvetica", 12))
+        layout.addWidget(message, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        unlock_btn = QPushButton("Разблокировать")
+        unlock_btn.setFixedWidth(200)
+        unlock_btn.clicked.connect(self.unlock_dialog)
+        layout.addWidget(unlock_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        layout.addStretch()
+        self.layout.addWidget(frame)
+        self.update_status()
+
+    def _show_unlocked_content(self):
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Title", "Username", "URL", "Last Updated"])
+        self.tree.setColumnWidth(0, 220)
+        self.tree.setColumnWidth(1, 180)
+        self.tree.setColumnWidth(2, 280)
+        self.tree.setColumnWidth(3, 140)
+
+        self._fill_test_data()
+        self.layout.addWidget(self.tree)
 
     def _fill_test_data(self):
         test_data = [
@@ -114,167 +256,118 @@ class CryptoSafeMainWindow:
             ("GitHub", "Ansa1r", "https://github.com/login", "2025-01-28"),
             ("Bank", "user456", "https://online.bank.ru", "2024-12-15"),
         ]
-        for item in test_data:
-            self.tree.insert("", tk.END, values=item)
 
-    def _create_status_bar(self):
-        self.status_var = tk.StringVar()
-        self.status_var.set("Locked | No user session")
-
-        status_bar = ttk.Label(
-            self.root,
-            textvariable=self.status_var,
-            relief=tk.SUNKEN,
-            anchor=tk.W,
-            padding=(10, 4)
-        )
-        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
-
-    def _check_lock_state(self):
-        db_path = "cryptosafe.db"  # можно позже взять из config
-        if not os.path.exists(db_path):
-            self.lock_frame = ttk.Frame(self.root)
-            self.lock_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
-            ttk.Label(
-                self.lock_frame,
-                text="Добро пожаловать в CryptoSafe Manager!",
-                font=("Helvetica", 20, "bold")
-            ).pack(pady=40)
-            ttk.Label(
-                self.lock_frame,
-                text="Это первый запуск.\nСейчас приложение создаст зашифрованную базу данных.\nПридумайте надёжный мастер-пароль.",
-                font=("Helvetica", 12),
-                justify="center"
-            ).pack(pady=20)
-            ttk.Button(
-                self.lock_frame,
-                text="Создать хранилище",
-                command=self.first_run_setup
-            ).pack(pady=30)
-            self.status_var.set("First run — setup required")
-
-        else:
-            self.lock_frame = ttk.Frame(self.root)
-            self.lock_frame.pack(fill=tk.BOTH, expand=True)
-            ttk.Label(
-                self.lock_frame,
-                text="CryptoSafe is Locked",
-                font=("Helvetica", 24, "bold")
-            ).pack(pady=80)
-            ttk.Label(
-                self.lock_frame,
-                text="Введите мастер-пароль для разблокировки хранилища",
-                font=("Helvetica", 12)
-            ).pack(pady=10)
-            ttk.Button(
-                self.lock_frame,
-                text="Разблокировать",
-                command=self.unlock_dialog
-            ).pack(pady=20)
-            self.update_status()
+        for item_data in test_data:
+            item = QTreeWidgetItem(item_data)
+            self.tree.addTopLevelItem(item)
 
     def update_status(self):
         if state_manager.is_locked:
             text = "Locked | Vault protected"
         else:
             text = f"Unlocked | User: {state_manager.current_user or 'Unknown'}"
-        self.status_var.set(text)
+        self.status_bar.showMessage(text)
 
     def unlock_dialog(self):
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Unlock Vault")
-        dialog.geometry("420x220")
-        dialog.transient(self.root)
-        dialog.grab_set()
-        ttk.Label(dialog, text="Enter master password:", font=("Helvetica", 11)).pack(pady=20)
-        pass_entry = ttk.Entry(dialog, show="*", width=40)
-        pass_entry.pack(pady=10)
-        pass_entry.focus()
+        dialog = UnlockDialog(self)
+        password = dialog.get_password()
 
-        def try_unlock():
-            pw = pass_entry.get().strip()
-            if not pw:
-                messagebox.showwarning("Input required", "Password cannot be empty")
-                return
-            if len(pw) >= 4:
+        if password:
+            if len(password) >= 4:
                 from src.core.crypto.secure_memory import secure_wipe_str, secure_zero_bytes
                 fake_key = secrets.token_bytes(32)
                 secure_zero_bytes(fake_key)
-                secure_wipe_str(pw)
+                secure_wipe_str(password)
 
                 state_manager.is_locked = False
                 state_manager.current_user = "demo-user"
                 event_bus.publish("UserLoggedIn", {"user": "demo-user"})
 
-                dialog.destroy()
-                for widget in self.root.winfo_children():
-                    widget.destroy()
-                self.__init__(self.root)
+                self._check_lock_state()
             else:
-                messagebox.showerror("Access denied", "Incorrect password")
-        ttk.Button(dialog, text="Unlock", command=try_unlock).pack(pady=20)
-
-        dialog.bind("<Return>", lambda e: try_unlock())
-
-    def new_vault(self): messagebox.showinfo("Action", "New Vault — not implemented yet")
-    def open_vault(self): messagebox.showinfo("Action", "Open Vault — not implemented yet")
-    def backup(self): messagebox.showinfo("Action", "Backup — stub")
-    def add_entry(self): messagebox.showinfo("Action", "Add Entry — stub")
-    def edit_entry(self): messagebox.showinfo("Action", "Edit Entry — stub")
-    def delete_entry(self): messagebox.showinfo("Action", "Delete Entry — stub")
-    def show_audit_log(self): messagebox.showinfo("Action", "Audit Log — stub (Sprint 5)")
-    def show_settings(self): messagebox.showinfo("Action", "Settings — stub")
-    def show_about(self):
-        messagebox.showinfo("About", "CryptoSafe Manager\nLaboratory work\nSprint 1 — Foundation")
-
-    def on_closing(self):
-        if messagebox.askokcancel("Quit", "Do you want to quit CryptoSafe?"):
-            self.root.destroy()
+                QMessageBox.critical(self, "Access denied", "Incorrect password")
 
     def first_run_setup(self):
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Первый запуск — создание хранилища")
-        dialog.geometry("480x320")
-        dialog.transient(self.root)
-        dialog.grab_set()
-        ttk.Label(dialog, text="Придумайте мастер-пароль:", font=("Helvetica", 11)).pack(pady=20)
-        pass_entry = ttk.Entry(dialog, show="*", width=40)
-        pass_entry.pack(pady=5)
-        pass_entry.focus()
-        ttk.Label(dialog, text="Подтвердите пароль:", font=("Helvetica", 11)).pack(pady=15)
-        confirm_entry = ttk.Entry(dialog, show="*", width=40)
-        confirm_entry.pack(pady=5)
+        dialog = FirstRunDialog(self)
+        password, confirm = dialog.get_passwords()
 
-        def create_vault():
-            pw = pass_entry.get().strip()
-            confirm = confirm_entry.get().strip()
-            if not pw or not confirm:
-                messagebox.showwarning("Ошибка", "Пароль не может быть пустым")
+        if password is not None:
+            if not password or not confirm:
+                QMessageBox.warning(self, "Ошибка", "Пароль не может быть пустым")
                 return
-            if pw != confirm:
-                messagebox.showerror("Ошибка", "Пароли не совпадают")
+
+            if password != confirm:
+                QMessageBox.critical(self, "Ошибка", "Пароли не совпадают")
                 return
-            if len(pw) < 8:
-                messagebox.showwarning("Слабый пароль", "Рекомендуется использовать пароль минимум 8 символов")
+
+            if len(password) < 8:
+                reply = QMessageBox.question(
+                    self, "Слабый пароль",
+                    "Рекомендуется использовать пароль минимум 8 символов. Продолжить?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                if reply == QMessageBox.StandardButton.No:
+                    return
+
             try:
-                open("cryptosafe.db", "a").close()  # создаём пустой файл
-                messagebox.showinfo("Успех", "Хранилище создано!\nТеперь можно разблокировать.")
-                dialog.destroy()
-                for widget in self.root.winfo_children():
-                    widget.destroy()
-                self.__init__(self.root)
+                open("cryptosafe.db", "a").close()
+                QMessageBox.information(self, "Успех", "Хранилище создано!\nТеперь можно разблокировать.")
+                self._check_lock_state()
             except Exception as e:
-                messagebox.showerror("Ошибка", f"Не удалось создать файл базы:\n{e}")
+                QMessageBox.critical(self, "Ошибка", f"Не удалось создать файл базы:\n{e}")
 
-        ttk.Button(dialog, text="Создать", command=create_vault).pack(pady=30)
+    def new_vault(self):
+        QMessageBox.information(self, "Action", "New Vault — not implemented yet")
 
-        dialog.bind("<Return>", lambda e: create_vault())
+    def open_vault(self):
+        QMessageBox.information(self, "Action", "Open Vault — not implemented yet")
+
+    def backup(self):
+        QMessageBox.information(self, "Action", "Backup — stub")
+
+    def add_entry(self):
+        QMessageBox.information(self, "Action", "Add Entry — stub")
+
+    def edit_entry(self):
+        QMessageBox.information(self, "Action", "Edit Entry — stub")
+
+    def delete_entry(self):
+        QMessageBox.information(self, "Action", "Delete Entry — stub")
+
+    def show_audit_log(self):
+        QMessageBox.information(self, "Action", "Audit Log — stub (Sprint 5)")
+
+    def show_settings(self):
+        QMessageBox.information(self, "Action", "Settings — stub")
+
+    def show_about(self):
+        QMessageBox.about(
+            self, "About",
+            "CryptoSafe Manager\nLaboratory work\nSprint 1 — Foundation"
+        )
+
+    def closeEvent(self, event):
+        reply = QMessageBox.question(
+            self, "Quit",
+            "Do you want to quit CryptoSafe?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            event.accept()
+        else:
+            event.ignore()
 
 
 def main():
-    root = tk.Tk()
-    app = CryptoSafeMainWindow(root)
-    root.mainloop()
+    app = QApplication(sys.argv)
+    app.setStyle('Fusion')  # Modern look
+
+    window = CryptoSafeMainWindow()
+    window.show()
+
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":

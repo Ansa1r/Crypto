@@ -1,7 +1,6 @@
 from argon2 import PasswordHasher, Type
 import secrets
 
-
 class KeyDerivation:
     def __init__(self):
         self.hasher = PasswordHasher(
