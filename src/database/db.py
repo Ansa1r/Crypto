@@ -3,6 +3,7 @@ from pathlib import Path
 import shutil
 from src.core.crypto.abstract import EncryptionService
 from src.core.crypto.placeholder import AES256Placeholder
+from src.core.crypto.secure_memory import secure_wipe_str, secure_zero_bytes
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DEFAULT_DB_PATH = BASE_DIR / "cryptosafe.db"
@@ -83,6 +84,9 @@ def add_vault_entry(title, username, password, url, notes, tags, key=b'placehold
             VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
         """, (title, username, encrypted_password, url, encrypted_notes, tags))
         conn.commit()
+        secure_wipe_str(password)
+        secure_wipe_str(notes)
+        secure_zero_bytes(key)
         return cursor.lastrowid
 
 def get_vault_entry(entry_id, key=b'placeholder_key', db_path=DB_PATH):
@@ -94,6 +98,7 @@ def get_vault_entry(entry_id, key=b'placeholder_key', db_path=DB_PATH):
         if row:
             decrypted_password = service.decrypt(row['encrypted_password'], key).decode()
             decrypted_notes = service.decrypt(row['notes'], key).decode() if row['notes'] else None
+            secure_zero_bytes(key)
             return {
                 'id': row['id'],
                 'title': row['title'],
@@ -105,6 +110,7 @@ def get_vault_entry(entry_id, key=b'placeholder_key', db_path=DB_PATH):
                 'created_at': row['created_at'],
                 'updated_at': row['updated_at']
             }
+        secure_zero_bytes(key)
         return None
 
 def update_vault_entry(entry_id, title=None, username=None, password=None, url=None, notes=None, tags=None, key=b'placeholder_key', db_path=DB_PATH):
@@ -139,6 +145,11 @@ def update_vault_entry(entry_id, title=None, username=None, password=None, url=N
             params.append(entry_id)
             cursor.execute(query, params)
             conn.commit()
+        if password is not None:
+            secure_wipe_str(password)
+        if notes is not None:
+            secure_wipe_str(notes)
+        secure_zero_bytes(key)
 
 def backup_db(to_path, db_path=DB_PATH):
     shutil.copy(db_path, to_path)

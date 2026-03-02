@@ -1,18 +1,18 @@
 import hashlib
 import secrets
-
+from .crypto.secure_memory import secure_wipe_str, secure_zero_bytes
 
 class KeyManager:
-
     def derive_key(self, password: str, salt: bytes) -> bytes:
-        return hashlib.sha256(password.encode() + salt).digest()
+        derived = hashlib.sha256(password.encode() + salt).digest()
+        secure_wipe_str(password)
+        secure_zero_bytes(salt)
+        return derived
 
     def store_key(self):
-        # Implemented in Sprint 2
         pass
 
     def load_key(self):
-        # Implemented in Sprint 2
         pass
 
     def generate_salt(self) -> bytes:
