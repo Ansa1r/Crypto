@@ -9,3 +9,5 @@ pytest
 pytest-cov
 
 python-dotenv
+
+PySide6
