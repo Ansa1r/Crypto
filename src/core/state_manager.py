@@ -1,7 +1,4 @@
 class StateManager:
-    """
-    Tracks application runtime state.
-    """
 
     def __init__(self):
         self.is_locked = True

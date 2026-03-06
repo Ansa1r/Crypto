@@ -1,1 +1,13 @@
+cryptography
+
+argon2-cffi
+
+keyring
+
 pytest
+
+pytest-cov
+
+python-dotenv
+
+PySide6

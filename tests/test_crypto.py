@@ -1,12 +1,30 @@
+import pytest
 from src.core.crypto.placeholder import AES256Placeholder
 
+def test_placeholder_roundtrip():
+    service = AES256Placeholder()
+    key = b'test_key_16_bytes'
+    plaintext = b"Hello, CryptoSafe!"
 
-def test_encrypt_decrypt():
-    crypto = AES256Placeholder()
-    data = b"secret"
-    key = b"key"
+    ciphertext = service.encrypt(plaintext, key)
+    decrypted = service.decrypt(ciphertext, key)
 
-    encrypted = crypto.encrypt(data, key)
-    decrypted = crypto.decrypt(encrypted, key)
+    assert decrypted == plaintext
+    assert decrypted != ciphertext
 
-    assert decrypted == data
+def test_placeholder_different_keys():
+    service = AES256Placeholder()
+    key1 = b'key_one___________'
+    key2 = b'key_two___________'
+
+    data = b'Secret message'
+    enc1 = service.encrypt(data, key1)
+    enc2 = service.encrypt(data, key2)
+
+    assert enc1 != enc2
+
+    dec1 = service.decrypt(enc1, key1)
+    assert dec1 == data
+
+    dec_wrong = service.decrypt(enc1, key2)
+    assert dec_wrong != data

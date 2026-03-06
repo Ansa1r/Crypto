@@ -3,9 +3,6 @@ from typing import Callable
 
 
 class EventBus:
-    """
-    Simple publish/subscribe event system.
-    """
 
     def __init__(self):
         self._subscribers = defaultdict(list)
@@ -18,5 +15,4 @@ class EventBus:
             handler(data)
 
 def audit_log_handler(event_data):
-    # Placeholder for Sprint 5
     print(f"[AUDIT] Event recorded: {event_data}")
