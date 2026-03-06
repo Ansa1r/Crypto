@@ -8,7 +8,7 @@ import secrets
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DEFAULT_DB_PATH = BASE_DIR / "cryptosafe.db"
 DB_PATH = DEFAULT_DB_PATH
-
+DB_VERSION = 2
 
 def get_connection(db_path=DB_PATH):
     conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -74,6 +74,62 @@ def _create_initial_schema(cursor):
         );
     """)
 
+
+def migrate(db_path: Path):
+    conn = get_connection(db_path)
+    cursor = conn.cursor()
+
+    cursor.execute("PRAGMA user_version")
+    current_version = cursor.fetchone()[0]
+
+    if current_version < DB_VERSION:
+        if current_version == 0:
+            cursor.executescript("""
+                CREATE TABLE IF NOT EXISTS vault_entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    username TEXT,
+                    encrypted_password BLOB,
+                    url TEXT,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    tags TEXT
+                );
+                CREATE TABLE IF NOT EXISTS audit_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    action TEXT,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    entry_id INTEGER,
+                    details TEXT,
+                    signature BLOB
+                );
+                CREATE TABLE IF NOT EXISTS settings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    setting_key TEXT UNIQUE,
+                    setting_value TEXT,
+                    encrypted BOOLEAN DEFAULT 0
+                );
+            """)
+
+        if current_version < 1:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS key_store (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    key_type TEXT NOT NULL,
+                    key_data BLOB,
+                    version INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+
+        if current_version < 2:
+            cursor.execute("ALTER TABLE key_store ADD COLUMN params TEXT")
+
+        conn.execute(f"PRAGMA user_version = {DB_VERSION}")
+        conn.commit()
+
+    conn.close()
 
 def set_master_password(password, db_path=DB_PATH):
     salt = secrets.token_bytes(32)
