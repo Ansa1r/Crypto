@@ -1,20 +1,43 @@
 import ctypes
-import secrets
 import gc
-from typing import Optional, Union
+import secrets
 
-def secure_zero_bytes(data: Optional[bytes]) -> None:
+
+def secure_zero(data):
     if data is None or len(data) == 0:
         return
+
     try:
-        buf = (ctypes.c_char * len(data)).from_buffer_copy(data)
-        ctypes.memset(ctypes.byref(buf), 0, len(data))
+        if isinstance(data, bytearray):
+            data[:] = b'\x00' * len(data)
+        elif isinstance(data, memoryview):
+            ctypes.memset(ctypes.addressof(data.obj), 0, len(data))
     except Exception:
-        secrets.token_bytes(len(data))
+        dummy = secrets.token_bytes(len(data))
+        if isinstance(data, bytearray):
+            data[:] = dummy
+
+    gc.collect()
+
+
+def secure_wipe_bytes(data):
     del data
     gc.collect()
 
-def secure_wipe_str(s: Optional[str]) -> None:
+
+class SecureBytes(bytearray):
+    def __del__(self):
+        secure_zero(self)
+
+    def __exit__(self, *args):
+        secure_zero(self)
+
+
+def get_secure_buffer(size):
+    return SecureBytes(size)
+
+
+def secure_wipe_str(s):
     if not s:
         return
     length = len(s)
@@ -29,7 +52,7 @@ def secure_wipe_str(s: Optional[str]) -> None:
     gc.collect()
 
 
-def secure_compare(a: Union[str, bytes], b: Union[str, bytes]) -> bool:
+def secure_compare(a, b):
     if isinstance(a, str) and isinstance(b, str):
         a_bytes = a.encode('utf-8')
         b_bytes = b.encode('utf-8')
@@ -39,7 +62,8 @@ def secure_compare(a: Union[str, bytes], b: Union[str, bytes]) -> bool:
         return False
 
     result = secrets.compare_digest(a_bytes, b_bytes)
-    secure_zero_bytes(a_bytes)
-    secure_zero_bytes(b_bytes)
+    del a_bytes
+    del b_bytes
+    gc.collect()
 
     return result

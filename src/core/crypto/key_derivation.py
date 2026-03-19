@@ -1,25 +1,40 @@
 from argon2 import PasswordHasher, Type
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives import hashes
 import secrets
 
 class KeyDerivation:
-    def __init__(self):
-        self.hasher = PasswordHasher(
-            time_cost=3,
-            memory_cost=65536,
-            parallelism=4,
+    def __init__(self, config=None):
+        config = config or {}
+
+        self.auth_hasher = PasswordHasher(
+            time_cost=config.get('argon2_time', 3),
+            memory_cost=config.get('argon2_memory', 65536),
+            parallelism=config.get('argon2_parallelism', 4),
             hash_len=32,
             salt_len=16,
             type=Type.ID
         )
 
-    def auth_hash(self, password: str) -> str:
+        self.pbkdf2_iterations = config.get('pbkdf2_iterations', 600000)
 
-        return self.hasher.hash(password)
+    def create_auth_hash(self, password):
+        hash_str = self.auth_hasher.hash(password)
+        salt = secrets.token_bytes(16)
+        return hash_str, salt
 
-    def verify(self, password: str, stored_hash: str) -> bool:
-
+    def verify_password(self, password, stored_hash):
         try:
-            return self.hasher.verify(stored_hash, password)
+            return self.auth_hasher.verify(stored_hash, password)
         except Exception:
-            secrets.compare_digest(b"dummy", b"dummy")
+            secrets.compare_digest(b'dummy', b'dummy')
             return False
+
+    def derive_encryption_key(self, password, salt):
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            iterations=self.pbkdf2_iterations,
+        )
+        return kdf.derive(password.encode('utf-8'))

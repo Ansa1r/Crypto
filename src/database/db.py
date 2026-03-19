@@ -4,11 +4,14 @@ import shutil
 from datetime import datetime
 import hashlib
 import secrets
+import json
+from ..core.crypto.key_derivation import KeyDerivation
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DEFAULT_DB_PATH = BASE_DIR / "cryptosafe.db"
 DB_PATH = DEFAULT_DB_PATH
-DB_VERSION = 2
+DB_VERSION = 3
+
 
 def get_connection(db_path=DB_PATH):
     conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -68,14 +71,15 @@ def _create_initial_schema(cursor):
         CREATE TABLE IF NOT EXISTS key_store (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             key_type TEXT NOT NULL,
-            salt BLOB,
-            hash BLOB,
+            key_data BLOB NOT NULL,
+            version INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             params TEXT
         );
     """)
 
 
-def migrate(db_path: Path):
+def migrate(db_path):
     conn = get_connection(db_path)
     cursor = conn.cursor()
 
@@ -126,46 +130,90 @@ def migrate(db_path: Path):
         if current_version < 2:
             cursor.execute("ALTER TABLE key_store ADD COLUMN params TEXT")
 
+        if current_version < 3:
+            cursor.execute("DELETE FROM key_store")
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS key_store_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    key_type TEXT NOT NULL,
+                    key_data BLOB NOT NULL,
+                    version INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    params TEXT
+                );
+            """)
+
+            cursor.execute("DROP TABLE IF EXISTS key_store")
+            cursor.execute("ALTER TABLE key_store_new RENAME TO key_store")
+
         conn.execute(f"PRAGMA user_version = {DB_VERSION}")
         conn.commit()
 
     conn.close()
 
+
 def set_master_password(password, db_path=DB_PATH):
-    salt = secrets.token_bytes(32)
-    key = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
+    kd = KeyDerivation()
+
+    auth_hash, pbkdf2_salt = kd.create_auth_hash(password)
 
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM key_store WHERE key_type = 'master'")
+
+        cursor.execute("DELETE FROM key_store WHERE key_type IN ('auth_hash', 'pbkdf2_salt')")
+
         cursor.execute("""
-            INSERT INTO key_store (key_type, salt, hash, params)
-            VALUES (?, ?, ?, ?)
-        """, ('master', salt, key, 'pbkdf2:sha256:100000'))
+            INSERT INTO key_store (key_type, key_data, params)
+            VALUES (?, ?, ?)
+        """, ('auth_hash', auth_hash.encode('utf-8'),
+              json.dumps({'algorithm': 'argon2id', 'version': 1})))
+
+        cursor.execute("""
+            INSERT INTO key_store (key_type, key_data, params)
+            VALUES (?, ?, ?)
+        """, ('pbkdf2_salt', pbkdf2_salt,
+              json.dumps({'algorithm': 'pbkdf2', 'iterations': 600000, 'version': 1})))
+
         conn.commit()
 
 
 def verify_master_password(password, db_path=DB_PATH):
+    kd = KeyDerivation()
+
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT salt, hash FROM key_store WHERE key_type = 'master'")
+
+        cursor.execute("""
+            SELECT key_data FROM key_store 
+            WHERE key_type = 'auth_hash' 
+            ORDER BY created_at DESC LIMIT 1
+        """)
         row = cursor.fetchone()
 
         if not row:
             return False
 
-        salt = row['salt']
-        stored_hash = row['hash']
+        stored_hash = row['key_data'].decode('utf-8')
+        return kd.verify_password(password, stored_hash)
 
-        test_hash = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
 
-        return secrets.compare_digest(test_hash, stored_hash)
+def get_pbkdf2_salt(db_path=DB_PATH):
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT key_data FROM key_store 
+            WHERE key_type = 'pbkdf2_salt' 
+            ORDER BY created_at DESC LIMIT 1
+        """)
+        row = cursor.fetchone()
+        return row['key_data'] if row else None
 
 
 def has_master_password(db_path=DB_PATH):
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM key_store WHERE key_type = 'master'")
+        cursor.execute("SELECT COUNT(*) FROM key_store WHERE key_type = 'auth_hash'")
         count = cursor.fetchone()[0]
         return count > 0
 

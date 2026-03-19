@@ -1,19 +1,51 @@
-import hashlib
-import secrets
-from .crypto.secure_memory import secure_wipe_str, secure_zero_bytes
+from .abstract import KeyManager
+from .crypto.key_derivation import KeyDerivation
+from .crypto.secure_memory import secure_zero
+import time
 
-class KeyManager:
-    def derive_key(self, password: str, salt: bytes) -> bytes:
-        derived = hashlib.sha256(password.encode() + salt).digest()
-        secure_wipe_str(password)
-        secure_zero_bytes(salt)
-        return derived
+class MasterKeyManager(KeyManager):
+    def __init__(self, config=None):
+        self._encryption_key = None
+        self._unlocked = False
+        self._unlock_time = None
+        self._last_activity = None
+        self.key_derivation = KeyDerivation(config)
 
-    def store_key(self):
-        pass
+    def get_encryption_key(self):
+        if self.is_unlocked():
+            self._update_activity()
+            return self._encryption_key
+        return None
 
-    def load_key(self):
-        pass
+    def is_unlocked(self):
+        if not self._unlocked:
+            return False
 
-    def generate_salt(self) -> bytes:
-        return secrets.token_bytes(16)
+        if time.time() - self._last_activity > 3600:
+            self.lock()
+            return False
+
+        return True
+
+    def unlock(self, password, auth_hash, pbkdf2_salt):
+        if not self.key_derivation.verify_password(password, auth_hash):
+            return False
+
+        self._encryption_key = self.key_derivation.derive_encryption_key(
+            password, pbkdf2_salt
+        )
+
+        self._unlocked = True
+        self._unlock_time = time.time()
+        self._update_activity()
+
+        return True
+
+    def lock(self):
+        if self._encryption_key:
+            secure_zero(self._encryption_key)
+        self._encryption_key = None
+        self._unlocked = False
+
+    def _update_activity(self):
+        self._last_activity = time.time()
