@@ -19,11 +19,11 @@ class EncryptionService(ABC):
         pass
 
     @abstractmethod
-    def decrypt(self, ciphertext: bytes) -> bytes:
+    def decrypt(self, data: bytes) -> bytes:
         pass
 
-    def _get_current_key(self) -> bytes:
+    def _get_key(self) -> bytes:
         key = self.key_manager.get_encryption_key()
-        if key is None or not self.key_manager.is_unlocked():
-            raise RuntimeError("Vault is locked or no encryption key available")
+        if key is None:
+            raise RuntimeError("Encryption key not available")
         return key

@@ -1,20 +1,17 @@
 from .abstract import EncryptionService
-from .secure_memory import secure_zero_bytes
 
 class AES256Placeholder(EncryptionService):
-    def encrypt(self, data: bytes, key: bytes) -> bytes:
-        result = self._xor(data, key)
-        secure_zero_bytes(key)
-        return result
+    def encrypt(self, data: bytes) -> bytes:
+        key = self._get_key()
+        return self._xor(data, key)
 
-    def decrypt(self, ciphertext: bytes, key: bytes) -> bytes:
-        result = self._xor(ciphertext, key)
-        secure_zero_bytes(key)
-        return result
+    def decrypt(self, data: bytes) -> bytes:
+        key = self._get_key()
+        return self._xor(data, key)
 
     def _xor(self, data: bytes, key: bytes) -> bytes:
         result = bytearray()
-        for i, b in enumerate(data):
-            result.append(b ^ key[i % len(key)])
-        secure_zero_bytes(key)
+        key_len = len(key)
+        for i, byte in enumerate(data):
+            result.append(byte ^ key[i % key_len])
         return bytes(result)

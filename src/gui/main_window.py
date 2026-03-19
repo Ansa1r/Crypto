@@ -13,12 +13,14 @@ from PyQt6.QtGui import QAction, QFont
 try:
     from src.core.state_manager import StateManager
     from src.core.events import EventBus
+    from src.core.key_manager import MasterKeyManager
+    from src.core.crypto.placeholder import AES256Placeholder
     from src.database.db import (
         init_db, add_vault_entry, get_all_vault_entries,
         update_vault_entry, delete_vault_entry, search_vault_entries,
         add_audit_log, set_master_password, verify_master_password,
-        has_master_password
-    )
+        has_master_password, get_pbkdf2_salt, get_connection
+)
 except ImportError:
     class StateManager:
         def __init__(self):
@@ -29,6 +31,31 @@ except ImportError:
     class EventBus:
         def publish(self, event_name, data=None):
             print(f"[EVENT] {event_name} {data or ''}")
+
+
+    class MasterKeyManager:
+        def __init__(self):
+            self._unlocked = False
+
+        def unlock(self, password, auth_hash, pbkdf2_salt, username):
+            return False
+
+        def is_unlocked(self):
+            return self._unlocked
+
+        def get_encryption_key(self):
+            return None
+
+
+    class AES256Placeholder:
+        def __init__(self, key_manager):
+            self.key_manager = key_manager
+
+        def encrypt(self, data):
+            return data
+
+        def decrypt(self, data):
+            return data
 
 
     def init_db(*args, **kwargs):
@@ -70,8 +97,14 @@ except ImportError:
     def has_master_password(*args, **kwargs):
         return False
 
+
+    def get_pbkdf2_salt(*args, **kwargs):
+        return None
+
 state_manager = StateManager()
 event_bus = EventBus()
+key_manager = MasterKeyManager()
+crypto_service = AES256Placeholder(key_manager)
 
 from src.gui.widgets.password_entry import PasswordEntry
 from src.gui.widgets.secure_table import SecureTable
@@ -422,7 +455,21 @@ class CryptoSafeMainWindow(QMainWindow):
         password = dialog.get_password()
 
         if password:
-            if verify_master_password(password, self.current_db_path):
+            auth_hash_row = None
+            with get_connection(self.current_db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT key_data FROM key_store WHERE key_type = 'auth_hash' AND username = 'default' ORDER BY created_at DESC LIMIT 1")
+                auth_hash_row = cursor.fetchone()
+
+            if not auth_hash_row:
+                QMessageBox.critical(self, "Error", "Authentication data not found")
+                return
+
+            auth_hash = auth_hash_row['key_data'].decode('utf-8')
+            pbkdf2_salt = get_pbkdf2_salt(self.current_db_path)
+
+            if key_manager.unlock(password, auth_hash, pbkdf2_salt, "default"):
                 self.attempts = 0
                 state_manager.is_locked = False
                 state_manager.current_user = "user"
@@ -486,6 +533,7 @@ class CryptoSafeMainWindow(QMainWindow):
                 QMessageBox.critical(self, "Error", f"Failed to create database:\n{str(e)}")
 
     def lock_vault(self):
+        key_manager.lock()
         state_manager.is_locked = True
         state_manager.current_user = None
         add_audit_log("UserLoggedOut", details="User locked vault", db_path=self.current_db_path)
@@ -668,7 +716,7 @@ class CryptoSafeMainWindow(QMainWindow):
     def show_about(self):
         QMessageBox.about(
             self, "About CryptoSafe Manager",
-            "CryptoSafe Manager\nVersion 1.0 (Sprint 1)\n\n"
+            "CryptoSafe Manager\nVersion 1.0 (Sprint 2)\n\n"
             "A secure password manager with modular architecture.\n"
             "Developed as a laboratory work project."
         )
@@ -685,6 +733,7 @@ class CryptoSafeMainWindow(QMainWindow):
         )
 
         if reply == QMessageBox.StandardButton.Yes:
+            key_manager.lock()
             event.accept()
         else:
             event.ignore()

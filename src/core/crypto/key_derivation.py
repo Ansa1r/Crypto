@@ -1,6 +1,7 @@
 from argon2 import PasswordHasher, Type
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDFExpand
 import secrets
 
 class KeyDerivation:
@@ -38,3 +39,20 @@ class KeyDerivation:
             iterations=self.pbkdf2_iterations,
         )
         return kdf.derive(password.encode('utf-8'))
+
+    def derive_audit_key(self, master_key: bytes, salt: bytes) -> bytes:
+        return self._hkdf_expand(master_key, b"audit_signing", 32, salt)
+
+    def derive_sharing_key(self, master_key: bytes, salt: bytes) -> bytes:
+        return self._hkdf_expand(master_key, b"sharing_export", 32, salt)
+
+    def derive_totp_key(self, master_key: bytes, salt: bytes) -> bytes:
+        return self._hkdf_expand(master_key, b"totp_generation", 20, salt)
+
+    def _hkdf_expand(self, prk: bytes, info: bytes, length: int, salt: bytes) -> bytes:
+        hkdf = HKDFExpand(
+            algorithm=hashes.SHA256(),
+            length=length,
+            info=info,
+        )
+        return hkdf.derive(prk)
