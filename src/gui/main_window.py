@@ -20,7 +20,7 @@ try:
         update_vault_entry, delete_vault_entry, search_vault_entries,
         add_audit_log, set_master_password, verify_master_password,
         has_master_password, get_pbkdf2_salt, get_connection
-)
+    )
 except ImportError:
     class StateManager:
         def __init__(self):
@@ -101,6 +101,10 @@ except ImportError:
     def get_pbkdf2_salt(*args, **kwargs):
         return None
 
+
+    def get_connection(*args, **kwargs):
+        return None
+
 state_manager = StateManager()
 event_bus = EventBus()
 key_manager = MasterKeyManager()
@@ -111,6 +115,7 @@ from src.gui.widgets.secure_table import SecureTable
 from src.gui.widgets.audit_log_viewer import AuditLogViewer
 from src.gui.widgets.entry_dialog import EntryDialog
 from src.gui.settings_dialog import SettingsDialog
+from src.gui.change_password_dialog import ChangePasswordDialog
 
 
 class UnlockDialog(QDialog):
@@ -274,6 +279,12 @@ class CryptoSafeMainWindow(QMainWindow):
         delete_entry_action = QAction("Delete Selected", self)
         delete_entry_action.triggered.connect(self.delete_entry)
         edit_menu.addAction(delete_entry_action)
+
+        edit_menu.addSeparator()
+
+        change_password_action = QAction("Change Master Password...", self)
+        change_password_action.triggered.connect(self.change_master_password)
+        edit_menu.addAction(change_password_action)
 
         view_menu = menubar.addMenu("View")
 
@@ -455,7 +466,6 @@ class CryptoSafeMainWindow(QMainWindow):
         password = dialog.get_password()
 
         if password:
-            auth_hash_row = None
             with get_connection(self.current_db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
@@ -695,6 +705,19 @@ class CryptoSafeMainWindow(QMainWindow):
                 QMessageBox.information(self, "Success", "Entry deleted successfully")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to delete entry:\n{str(e)}")
+
+    def change_master_password(self):
+        if state_manager.is_locked:
+            QMessageBox.warning(self, "Warning", "Please unlock the vault first")
+            return
+
+        dialog = ChangePasswordDialog(self, key_manager, self.current_db_path, crypto_service)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.lock_vault()
+            QMessageBox.information(
+                self, "Password Changed",
+                "Master password has been changed successfully.\nPlease unlock the vault with your new password."
+            )
 
     def show_audit_log(self):
         viewer = AuditLogViewer(self, self.current_db_path)
