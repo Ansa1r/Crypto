@@ -10,12 +10,14 @@ from ..core.crypto.key_derivation import KeyDerivation
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DEFAULT_DB_PATH = BASE_DIR / "cryptosafe.db"
 DB_PATH = DEFAULT_DB_PATH
-DB_VERSION = 4
+DB_VERSION = 5
+
 
 def get_connection(db_path=DB_PATH):
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
+
 
 def init_db(db_path=DB_PATH):
     conn = get_connection(db_path)
@@ -31,6 +33,7 @@ def init_db(db_path=DB_PATH):
     conn.commit()
     conn.close()
     migrate(db_path)
+
 
 def _create_initial_schema(cursor):
     cursor.execute("""
@@ -77,6 +80,7 @@ def _create_initial_schema(cursor):
         );
     """)
 
+
 def migrate(db_path):
     conn = get_connection(db_path)
     cursor = conn.cursor()
@@ -85,101 +89,75 @@ def migrate(db_path):
     current_version = cursor.fetchone()[0]
 
     if current_version < DB_VERSION:
-        if current_version == 0:
-            cursor.executescript("""
-                CREATE TABLE IF NOT EXISTS vault_entries (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    title TEXT NOT NULL,
-                    username TEXT,
-                    encrypted_password BLOB,
-                    url TEXT,
-                    notes TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    tags TEXT
-                );
-                CREATE TABLE IF NOT EXISTS audit_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    action TEXT,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    entry_id INTEGER,
-                    details TEXT,
-                    signature BLOB
-                );
-                CREATE TABLE IF NOT EXISTS settings (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    setting_key TEXT UNIQUE,
-                    setting_value TEXT,
-                    encrypted BOOLEAN DEFAULT 0
-                );
-            """)
-
-        if current_version < 1:
+        if current_version < 5:
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS key_store (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    key_type TEXT NOT NULL,
-                    key_data BLOB,
-                    version INTEGER DEFAULT 1,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-
-        if current_version < 2:
-            cursor.execute("ALTER TABLE key_store ADD COLUMN params TEXT")
-
-        if current_version < 3:
-            cursor.execute("DELETE FROM key_store")
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS key_store_new (
+                CREATE TABLE IF NOT EXISTS key_store_temp (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     key_type TEXT NOT NULL,
                     key_data BLOB NOT NULL,
                     version INTEGER DEFAULT 1,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    params TEXT
+                    params TEXT,
+                    username TEXT DEFAULT 'default'
                 );
             """)
-            cursor.execute("DROP TABLE IF EXISTS key_store")
-            cursor.execute("ALTER TABLE key_store_new RENAME TO key_store")
 
-        if current_version < 4:
-            cursor.execute("ALTER TABLE key_store ADD COLUMN username TEXT DEFAULT 'default'")
             cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_key_store_username 
-                ON key_store(username)
+                INSERT INTO key_store_temp (id, key_type, key_data, version, created_at, params, username)
+                SELECT id, key_type, key_data, version, created_at, params, username FROM key_store
             """)
+
+            cursor.execute("DROP TABLE key_store")
+            cursor.execute("ALTER TABLE key_store_temp RENAME TO key_store")
 
         conn.execute(f"PRAGMA user_version = {DB_VERSION}")
         conn.commit()
 
     conn.close()
 
+
 def set_master_password(password, db_path=DB_PATH, username="default"):
     kd = KeyDerivation()
-    auth_hash, pbkdf2_salt = kd.create_auth_hash(password)
+    auth_hash, auth_params = kd.create_auth_hash(password)
+    pbkdf2_salt = secrets.token_bytes(16)
+    encryption_params = {
+        'algorithm': 'pbkdf2',
+        'iterations': 600000,
+        'key_length': 32,
+        'hash_function': 'SHA256',
+        'version': 1
+    }
 
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute("""
             DELETE FROM key_store 
-            WHERE key_type IN ('auth_hash', 'pbkdf2_salt') 
+            WHERE key_type IN ('auth_hash', 'pbkdf2_salt', 'auth_params', 'encryption_params') 
             AND username = ?
         """, (username,))
 
         cursor.execute("""
             INSERT INTO key_store (key_type, key_data, params, username)
             VALUES (?, ?, ?, ?)
-        """, ('auth_hash', auth_hash.encode('utf-8'),
-              json.dumps({'algorithm': 'argon2id', 'version': 1}), username))
+        """, ('auth_hash', auth_hash.encode('utf-8'), json.dumps(auth_params), username))
 
         cursor.execute("""
             INSERT INTO key_store (key_type, key_data, params, username)
             VALUES (?, ?, ?, ?)
-        """, ('pbkdf2_salt', pbkdf2_salt,
-              json.dumps({'algorithm': 'pbkdf2', 'iterations': 600000, 'version': 1}), username))
+        """, ('pbkdf2_salt', pbkdf2_salt, json.dumps(encryption_params), username))
+
+        cursor.execute("""
+            INSERT INTO key_store (key_type, key_data, params, username)
+            VALUES (?, ?, ?, ?)
+        """, ('auth_params', json.dumps(auth_params).encode('utf-8'), None, username))
+
+        cursor.execute("""
+            INSERT INTO key_store (key_type, key_data, params, username)
+            VALUES (?, ?, ?, ?)
+        """, ('encryption_params', json.dumps(encryption_params).encode('utf-8'), None, username))
 
         conn.commit()
+
 
 def verify_master_password(password, db_path=DB_PATH, username="default"):
     kd = KeyDerivation()
@@ -200,6 +178,7 @@ def verify_master_password(password, db_path=DB_PATH, username="default"):
         stored_hash = row['key_data'].decode('utf-8')
         return kd.verify_password(password, stored_hash)
 
+
 def get_pbkdf2_salt(db_path=DB_PATH, username="default"):
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
@@ -210,7 +189,18 @@ def get_pbkdf2_salt(db_path=DB_PATH, username="default"):
             ORDER BY created_at DESC LIMIT 1
         """, (username,))
         row = cursor.fetchone()
+        if row:
+            return row['key_data']
+
+        cursor.execute("""
+            SELECT key_data FROM key_store 
+            WHERE key_type = 'pbkdf2_salt' 
+            AND username = 'default'
+            ORDER BY created_at DESC LIMIT 1
+        """, (username,))
+        row = cursor.fetchone()
         return row['key_data'] if row else None
+
 
 def has_master_password(db_path=DB_PATH, username="default"):
     with get_connection(db_path) as conn:
@@ -223,28 +213,38 @@ def has_master_password(db_path=DB_PATH, username="default"):
         count = cursor.fetchone()[0]
         return count > 0
 
-def update_auth_data(auth_hash, pbkdf2_salt, db_path=DB_PATH, username="default"):
+
+def update_auth_data(auth_hash, pbkdf2_salt, auth_params, encryption_params, db_path=DB_PATH, username="default"):
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute("""
             DELETE FROM key_store 
-            WHERE key_type IN ('auth_hash', 'pbkdf2_salt') 
+            WHERE key_type IN ('auth_hash', 'pbkdf2_salt', 'auth_params', 'encryption_params') 
             AND username = ?
         """, (username,))
 
         cursor.execute("""
             INSERT INTO key_store (key_type, key_data, params, username)
             VALUES (?, ?, ?, ?)
-        """, ('auth_hash', auth_hash.encode('utf-8'),
-              json.dumps({'algorithm': 'argon2id', 'version': 1}), username))
+        """, ('auth_hash', auth_hash.encode('utf-8'), json.dumps(auth_params), username))
 
         cursor.execute("""
             INSERT INTO key_store (key_type, key_data, params, username)
             VALUES (?, ?, ?, ?)
-        """, ('pbkdf2_salt', pbkdf2_salt,
-              json.dumps({'algorithm': 'pbkdf2', 'iterations': 600000, 'version': 1}), username))
+        """, ('pbkdf2_salt', pbkdf2_salt, json.dumps(encryption_params), username))
+
+        cursor.execute("""
+            INSERT INTO key_store (key_type, key_data, params, username)
+            VALUES (?, ?, ?, ?)
+        """, ('auth_params', json.dumps(auth_params).encode('utf-8'), None, username))
+
+        cursor.execute("""
+            INSERT INTO key_store (key_type, key_data, params, username)
+            VALUES (?, ?, ?, ?)
+        """, ('encryption_params', json.dumps(encryption_params).encode('utf-8'), None, username))
 
         conn.commit()
+
 
 def get_key_params(key_type, db_path=DB_PATH, username="default"):
     with get_connection(db_path) as conn:
@@ -256,7 +256,20 @@ def get_key_params(key_type, db_path=DB_PATH, username="default"):
             ORDER BY created_at DESC LIMIT 1
         """, (key_type, username))
         row = cursor.fetchone()
-        return json.loads(row['params']) if row and row['params'] else None
+        if row and row['params']:
+            return json.loads(row['params'])
+
+        cursor.execute("""
+            SELECT key_data FROM key_store 
+            WHERE key_type = ? 
+            AND username = ?
+            ORDER BY created_at DESC LIMIT 1
+        """, (f'{key_type}_params', username))
+        row = cursor.fetchone()
+        if row:
+            return json.loads(row['key_data'].decode('utf-8'))
+        return None
+
 
 def delete_user_keys(username, db_path=DB_PATH):
     with get_connection(db_path) as conn:
@@ -264,6 +277,7 @@ def delete_user_keys(username, db_path=DB_PATH):
         cursor.execute("DELETE FROM key_store WHERE username = ?", (username,))
         conn.commit()
         return cursor.rowcount > 0
+
 
 def add_vault_entry(title, username, password, url, notes, tags, db_path=DB_PATH):
     now = datetime.now().isoformat()
@@ -276,6 +290,7 @@ def add_vault_entry(title, username, password, url, notes, tags, db_path=DB_PATH
         conn.commit()
         return cursor.lastrowid
 
+
 def get_vault_entry(entry_id, db_path=DB_PATH):
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
@@ -285,13 +300,16 @@ def get_vault_entry(entry_id, db_path=DB_PATH):
             return dict(row)
         return None
 
+
 def get_all_vault_entries(db_path=DB_PATH):
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM vault_entries ORDER BY title")
         return [dict(row) for row in cursor.fetchall()]
 
-def update_vault_entry(entry_id, title=None, username=None, password=None, url=None, notes=None, tags=None, encrypted_password=None, db_path=DB_PATH):
+
+def update_vault_entry(entry_id, title=None, username=None, password=None, url=None, notes=None, tags=None,
+                       encrypted_password=None, db_path=DB_PATH):
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
 
@@ -335,12 +353,14 @@ def update_vault_entry(entry_id, title=None, username=None, password=None, url=N
             return True
         return False
 
+
 def delete_vault_entry(entry_id, db_path=DB_PATH):
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM vault_entries WHERE id = ?", (entry_id,))
         conn.commit()
         return cursor.rowcount > 0
+
 
 def search_vault_entries(search_term, db_path=DB_PATH):
     with get_connection(db_path) as conn:
@@ -352,6 +372,7 @@ def search_vault_entries(search_term, db_path=DB_PATH):
         """, (f'%{search_term}%', f'%{search_term}%', f'%{search_term}%', f'%{search_term}%'))
         return [dict(row) for row in cursor.fetchall()]
 
+
 def add_audit_log(action, entry_id=None, details=None, db_path=DB_PATH):
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
@@ -361,6 +382,7 @@ def add_audit_log(action, entry_id=None, details=None, db_path=DB_PATH):
         """, (action, datetime.now().isoformat(), entry_id, details))
         conn.commit()
         return cursor.lastrowid
+
 
 def get_audit_logs(limit=100, db_path=DB_PATH):
     with get_connection(db_path) as conn:
@@ -372,8 +394,10 @@ def get_audit_logs(limit=100, db_path=DB_PATH):
         """, (limit,))
         return [dict(row) for row in cursor.fetchall()]
 
+
 def backup_db(to_path, db_path=DB_PATH):
     shutil.copy(db_path, to_path)
+
 
 def restore_db(from_path, db_path=DB_PATH):
     shutil.copy(from_path, db_path)
