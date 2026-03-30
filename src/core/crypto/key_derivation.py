@@ -9,8 +9,6 @@ class KeyDerivation:
     def __init__(self, config=None):
         config = config or {}
 
-        self._validate_argon2_params(config)
-
         self.auth_hasher = PasswordHasher(
             time_cost=config.get('argon2_time', 3),
             memory_cost=config.get('argon2_memory', 65536),
@@ -21,24 +19,6 @@ class KeyDerivation:
         )
 
         self.pbkdf2_iterations = config.get('pbkdf2_iterations', 600000)
-
-    def _validate_argon2_params(self, config):
-        time_cost = config.get('argon2_time', 3)
-        memory_cost = config.get('argon2_memory', 65536)
-        parallelism = config.get('argon2_parallelism', 4)
-
-        if time_cost > 10:
-            raise ValueError("Time cost too high: maximum 10 iterations")
-        if memory_cost > 1024 * 1024:
-            raise ValueError("Memory cost too high: maximum 1GB")
-        if parallelism > 8:
-            raise ValueError("Parallelism too high: maximum 8 lanes")
-        if time_cost < 1:
-            raise ValueError("Time cost too low: minimum 1 iteration")
-        if memory_cost < 8192:
-            raise ValueError("Memory cost too low: minimum 8MB")
-        if parallelism < 1:
-            raise ValueError("Parallelism too low: minimum 1 lane")
 
     def create_auth_hash(self, password):
         hash_str = self.auth_hasher.hash(password)
@@ -94,10 +74,3 @@ class KeyDerivation:
             info=info,
         )
         return hkdf.derive(prk)
-
-    def migrate_key_params(self, old_params, new_params):
-        return {
-            'old_version': old_params.get('version', 1),
-            'new_version': new_params.get('version', 2),
-            'migration_needed': old_params.get('version', 1) < new_params.get('version', 2)
-        }

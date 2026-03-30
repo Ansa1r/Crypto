@@ -10,7 +10,7 @@ from ..core.crypto.key_derivation import KeyDerivation
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DEFAULT_DB_PATH = BASE_DIR / "cryptosafe.db"
 DB_PATH = DEFAULT_DB_PATH
-DB_VERSION = 6
+DB_VERSION = 5
 
 
 def get_connection(db_path=DB_PATH):
@@ -90,102 +90,30 @@ def migrate(db_path):
 
     if current_version < DB_VERSION:
         if current_version < 5:
-            _migrate_to_v5(cursor)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS key_store_temp (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    key_type TEXT NOT NULL,
+                    key_data BLOB NOT NULL,
+                    version INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    params TEXT,
+                    username TEXT DEFAULT 'default'
+                );
+            """)
 
-        if current_version < 6:
-            _migrate_to_v6(cursor)
+            cursor.execute("""
+                INSERT INTO key_store_temp (id, key_type, key_data, version, created_at, params, username)
+                SELECT id, key_type, key_data, version, created_at, params, username FROM key_store
+            """)
+
+            cursor.execute("DROP TABLE key_store")
+            cursor.execute("ALTER TABLE key_store_temp RENAME TO key_store")
 
         conn.execute(f"PRAGMA user_version = {DB_VERSION}")
         conn.commit()
 
     conn.close()
-
-
-def _migrate_to_v5(cursor):
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS key_store_temp (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            key_type TEXT NOT NULL,
-            key_data BLOB NOT NULL,
-            version INTEGER DEFAULT 1,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            params TEXT,
-            username TEXT DEFAULT 'default'
-        );
-    """)
-
-    cursor.execute("""
-        INSERT INTO key_store_temp (id, key_type, key_data, version, created_at, params, username)
-        SELECT id, key_type, key_data, version, created_at, params, username FROM key_store
-    """)
-
-    cursor.execute("DROP TABLE key_store")
-    cursor.execute("ALTER TABLE key_store_temp RENAME TO key_store")
-
-
-def _migrate_to_v6(cursor):
-    try:
-        cursor.execute("ALTER TABLE key_store ADD COLUMN algorithm_version INTEGER DEFAULT 1")
-    except sqlite3.OperationalError:
-        pass
-
-    try:
-        cursor.execute("ALTER TABLE key_store ADD COLUMN migration_status TEXT DEFAULT 'completed'")
-    except sqlite3.OperationalError:
-        pass
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS schema_migrations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            migration_version INTEGER NOT NULL,
-            applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            description TEXT
-        )
-    """)
-
-    cursor.execute("""
-        INSERT OR IGNORE INTO schema_migrations (migration_version, description)
-        VALUES (5, 'Added username field')
-    """)
-
-    cursor.execute("""
-        INSERT OR IGNORE INTO schema_migrations (migration_version, description)
-        VALUES (6, 'Added algorithm_version and migration_status')
-    """)
-
-
-def get_migration_status(db_path=DB_PATH):
-    with get_connection(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA user_version")
-        current_version = cursor.fetchone()[0]
-
-        cursor.execute("SELECT * FROM schema_migrations ORDER BY migration_version")
-        migrations = cursor.fetchall()
-
-        return {
-            'current_version': current_version,
-            'target_version': DB_VERSION,
-            'migrations': [dict(m) for m in migrations],
-            'is_current': current_version >= DB_VERSION
-        }
-
-
-def rollback_migration(db_path=DB_PATH, target_version=5):
-    with get_connection(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA user_version")
-        current_version = cursor.fetchone()[0]
-
-        if current_version <= target_version:
-            return False
-
-        if target_version < 5:
-            return False
-
-        cursor.execute(f"PRAGMA user_version = {target_version}")
-        conn.commit()
-        return True
 
 
 def set_master_password(password, db_path=DB_PATH, username="default"):
@@ -209,24 +137,24 @@ def set_master_password(password, db_path=DB_PATH, username="default"):
         """, (username,))
 
         cursor.execute("""
-            INSERT INTO key_store (key_type, key_data, params, username, algorithm_version)
-            VALUES (?, ?, ?, ?, ?)
-        """, ('auth_hash', auth_hash.encode('utf-8'), json.dumps(auth_params), username, 2))
+            INSERT INTO key_store (key_type, key_data, params, username)
+            VALUES (?, ?, ?, ?)
+        """, ('auth_hash', auth_hash.encode('utf-8'), json.dumps(auth_params), username))
 
         cursor.execute("""
-            INSERT INTO key_store (key_type, key_data, params, username, algorithm_version)
-            VALUES (?, ?, ?, ?, ?)
-        """, ('pbkdf2_salt', pbkdf2_salt, json.dumps(encryption_params), username, 2))
+            INSERT INTO key_store (key_type, key_data, params, username)
+            VALUES (?, ?, ?, ?)
+        """, ('pbkdf2_salt', pbkdf2_salt, json.dumps(encryption_params), username))
 
         cursor.execute("""
-            INSERT INTO key_store (key_type, key_data, params, username, algorithm_version)
-            VALUES (?, ?, ?, ?, ?)
-        """, ('auth_params', json.dumps(auth_params).encode('utf-8'), None, username, 2))
+            INSERT INTO key_store (key_type, key_data, params, username)
+            VALUES (?, ?, ?, ?)
+        """, ('auth_params', json.dumps(auth_params).encode('utf-8'), None, username))
 
         cursor.execute("""
-            INSERT INTO key_store (key_type, key_data, params, username, algorithm_version)
-            VALUES (?, ?, ?, ?, ?)
-        """, ('encryption_params', json.dumps(encryption_params).encode('utf-8'), None, username, 2))
+            INSERT INTO key_store (key_type, key_data, params, username)
+            VALUES (?, ?, ?, ?)
+        """, ('encryption_params', json.dumps(encryption_params).encode('utf-8'), None, username))
 
         conn.commit()
 
@@ -296,24 +224,24 @@ def update_auth_data(auth_hash, pbkdf2_salt, auth_params, encryption_params, db_
         """, (username,))
 
         cursor.execute("""
-            INSERT INTO key_store (key_type, key_data, params, username, algorithm_version)
-            VALUES (?, ?, ?, ?, ?)
-        """, ('auth_hash', auth_hash.encode('utf-8'), json.dumps(auth_params), username, 2))
+            INSERT INTO key_store (key_type, key_data, params, username)
+            VALUES (?, ?, ?, ?)
+        """, ('auth_hash', auth_hash.encode('utf-8'), json.dumps(auth_params), username))
 
         cursor.execute("""
-            INSERT INTO key_store (key_type, key_data, params, username, algorithm_version)
-            VALUES (?, ?, ?, ?, ?)
-        """, ('pbkdf2_salt', pbkdf2_salt, json.dumps(encryption_params), username, 2))
+            INSERT INTO key_store (key_type, key_data, params, username)
+            VALUES (?, ?, ?, ?)
+        """, ('pbkdf2_salt', pbkdf2_salt, json.dumps(encryption_params), username))
 
         cursor.execute("""
-            INSERT INTO key_store (key_type, key_data, params, username, algorithm_version)
-            VALUES (?, ?, ?, ?, ?)
-        """, ('auth_params', json.dumps(auth_params).encode('utf-8'), None, username, 2))
+            INSERT INTO key_store (key_type, key_data, params, username)
+            VALUES (?, ?, ?, ?)
+        """, ('auth_params', json.dumps(auth_params).encode('utf-8'), None, username))
 
         cursor.execute("""
-            INSERT INTO key_store (key_type, key_data, params, username, algorithm_version)
-            VALUES (?, ?, ?, ?, ?)
-        """, ('encryption_params', json.dumps(encryption_params).encode('utf-8'), None, username, 2))
+            INSERT INTO key_store (key_type, key_data, params, username)
+            VALUES (?, ?, ?, ?)
+        """, ('encryption_params', json.dumps(encryption_params).encode('utf-8'), None, username))
 
         conn.commit()
 
