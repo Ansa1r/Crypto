@@ -3,7 +3,6 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDFExpand
 import secrets
-import json
 
 class KeyDerivation:
     def __init__(self, config=None):
@@ -22,16 +21,8 @@ class KeyDerivation:
 
     def create_auth_hash(self, password):
         hash_str = self.auth_hasher.hash(password)
-        params = {
-            'algorithm': 'argon2id',
-            'time_cost': 3,
-            'memory_cost': 65536,
-            'parallelism': 4,
-            'hash_len': 32,
-            'salt_len': 16,
-            'version': 1
-        }
-        return hash_str, params
+        salt = secrets.token_bytes(16)
+        return hash_str, salt
 
     def verify_password(self, password, stored_hash):
         try:
@@ -48,15 +39,6 @@ class KeyDerivation:
             iterations=self.pbkdf2_iterations,
         )
         return kdf.derive(password.encode('utf-8'))
-
-    def create_encryption_params(self):
-        return {
-            'algorithm': 'pbkdf2',
-            'iterations': self.pbkdf2_iterations,
-            'key_length': 32,
-            'hash_function': 'SHA256',
-            'version': 1
-        }
 
     def derive_audit_key(self, master_key: bytes, salt: bytes) -> bytes:
         return self._hkdf_expand(master_key, b"audit_signing", 32, salt)

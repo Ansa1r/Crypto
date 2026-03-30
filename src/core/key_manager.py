@@ -5,10 +5,8 @@ from crypto.password_validator import PasswordValidator
 from crypto.key_storage import KeychainStorage, SecureKeyCache
 from crypto.authentication import SessionManager, ExponentialBackoff
 import time
-import json
-import secrets
 from typing import Optional
-from src.database.db import get_connection
+
 
 class MasterKeyManager(KeyManager):
     def __init__(self, config=None):
@@ -24,8 +22,6 @@ class MasterKeyManager(KeyManager):
         self.backoff = ExponentialBackoff()
         self._protected_key = None
         self._current_username = None
-        self._auth_params = None
-        self._encryption_params = None
 
     def get_encryption_key(self):
         if self.is_unlocked():
@@ -119,41 +115,12 @@ class MasterKeyManager(KeyManager):
         if not valid:
             raise ValueError(f"Password too weak: {', '.join(errors)}")
 
-        auth_hash, auth_params = self.key_derivation.create_auth_hash(password)
-        pbkdf2_salt = secrets.token_bytes(16)
-        encryption_params = self.key_derivation.create_encryption_params()
+        auth_hash, pbkdf2_salt = self.key_derivation.create_auth_hash(password)
 
         self.keychain.clear_all_keys(username)
 
-        with get_connection(db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                DELETE FROM key_store 
-                WHERE key_type IN ('auth_hash', 'pbkdf2_salt', 'auth_params', 'encryption_params') 
-                AND username = ?
-            """, (username,))
-
-            cursor.execute("""
-                INSERT INTO key_store (key_type, key_data, params, username)
-                VALUES (?, ?, ?, ?)
-            """, ('auth_hash', auth_hash.encode('utf-8'), json.dumps(auth_params), username))
-
-            cursor.execute("""
-                INSERT INTO key_store (key_type, key_data, params, username)
-                VALUES (?, ?, ?, ?)
-            """, ('pbkdf2_salt', pbkdf2_salt, json.dumps(encryption_params), username))
-
-            cursor.execute("""
-                INSERT INTO key_store (key_type, key_data, params, username)
-                VALUES (?, ?, ?, ?)
-            """, ('auth_params', json.dumps(auth_params).encode('utf-8'), None, username))
-
-            cursor.execute("""
-                INSERT INTO key_store (key_type, key_data, params, username)
-                VALUES (?, ?, ?, ?)
-            """, ('encryption_params', json.dumps(encryption_params).encode('utf-8'), None, username))
-
-            conn.commit()
+        from src.database.db import set_master_password
+        set_master_password(password, db_path, username)
 
         return auth_hash, pbkdf2_salt
 
@@ -171,37 +138,13 @@ class MasterKeyManager(KeyManager):
 
         self._reencrypt_all_entries(old_key, new_key, crypto_service, db_path)
 
-        new_auth_hash, new_auth_params = self.key_derivation.create_auth_hash(new_password)
-        new_encryption_params = self.key_derivation.create_encryption_params()
+        new_auth_hash, new_salt = self.key_derivation.create_auth_hash(new_password)
 
-        with get_connection(db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                DELETE FROM key_store 
-                WHERE key_type IN ('auth_hash', 'auth_params', 'encryption_params') 
-                AND username = ?
-            """, (username,))
-
-            cursor.execute("""
-                INSERT INTO key_store (key_type, key_data, params, username)
-                VALUES (?, ?, ?, ?)
-            """, ('auth_hash', new_auth_hash.encode('utf-8'), json.dumps(new_auth_params), username))
-
-            cursor.execute("""
-                INSERT INTO key_store (key_type, key_data, params, username)
-                VALUES (?, ?, ?, ?)
-            """, ('auth_params', json.dumps(new_auth_params).encode('utf-8'), None, username))
-
-            cursor.execute("""
-                INSERT INTO key_store (key_type, key_data, params, username)
-                VALUES (?, ?, ?, ?)
-            """, ('encryption_params', json.dumps(new_encryption_params).encode('utf-8'), None, username))
-
-            conn.commit()
+        self._update_auth_data(new_auth_hash, new_salt, db_path, username)
 
         self.keychain.store_key("encryption_key", new_key, username)
 
-        return True, new_auth_hash, pbkdf2_salt
+        return True, new_auth_hash, new_salt
 
     def _reencrypt_all_entries(self, old_key, new_key, crypto_service, db_path):
         from src.database.db import get_all_vault_entries, update_vault_entry
@@ -210,12 +153,16 @@ class MasterKeyManager(KeyManager):
         for entry in entries:
             if entry.get('encrypted_password'):
                 try:
-                    decrypted = crypto_service.decrypt(entry['encrypted_password'])
-                    reencrypted = crypto_service.encrypt(decrypted)
+                    decrypted = crypto_service.decrypt(entry['encrypted_password'], old_key)
+                    reencrypted = crypto_service.encrypt(decrypted, new_key)
                     update_vault_entry(entry['id'], encrypted_password=reencrypted, db_path=db_path)
                 except Exception as e:
                     print(f"Failed to re-encrypt entry {entry['id']}: {e}")
                     continue
+
+    def _update_auth_data(self, new_auth_hash, new_salt, db_path, username="default"):
+        from src.database.db import update_auth_data
+        update_auth_data(new_auth_hash, new_salt, db_path, username)
 
     def _update_activity(self):
         self._last_activity = time.time()
@@ -236,31 +183,3 @@ class MasterKeyManager(KeyManager):
 
     def is_keychain_available(self) -> bool:
         return self.keychain.use_keychain
-
-    def get_auth_params(self, db_path, username="default"):
-        with get_connection(db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT key_data FROM key_store 
-                WHERE key_type = 'auth_params' 
-                AND username = ?
-                ORDER BY created_at DESC LIMIT 1
-            """, (username,))
-            row = cursor.fetchone()
-            if row:
-                return json.loads(row['key_data'].decode('utf-8'))
-            return None
-
-    def get_encryption_params(self, db_path, username="default"):
-        with get_connection(db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT key_data FROM key_store 
-                WHERE key_type = 'encryption_params' 
-                AND username = ?
-                ORDER BY created_at DESC LIMIT 1
-            """, (username,))
-            row = cursor.fetchone()
-            if row:
-                return json.loads(row['key_data'].decode('utf-8'))
-            return None

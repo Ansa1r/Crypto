@@ -506,11 +506,20 @@ class CryptoSafeMainWindow(QMainWindow):
                 QMessageBox.critical(self, "Error", "Passwords do not match")
                 return
 
+            if len(password) < 4:
+                reply = QMessageBox.question(
+                    self, "Weak Password",
+                    "It is recommended to use at least 4 characters. Continue?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                if reply == QMessageBox.StandardButton.No:
+                    return
+
             try:
                 self.current_db_path = db_path
                 init_db(db_path)
 
-                auth_hash, pbkdf2_salt = key_manager.create_vault(password, db_path, "default")
+                set_master_password(password, db_path)
 
                 state_manager.is_locked = False
                 state_manager.current_user = "user"
