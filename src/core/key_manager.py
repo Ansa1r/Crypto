@@ -7,9 +7,8 @@ from crypto.authentication import SessionManager, ExponentialBackoff
 import time
 import json
 import secrets
-from typing import Optional, Tuple
+from typing import Optional
 from src.database.db import get_connection
-
 
 class MasterKeyManager(KeyManager):
     def __init__(self, config=None):
@@ -170,50 +169,12 @@ class MasterKeyManager(KeyManager):
         old_key = self.get_encryption_key()
         new_key = self.derive_new_key(new_password, pbkdf2_salt)
 
-        success, message = self._reencrypt_all_entries_transactional(
-            old_key, new_key, new_password, crypto_service, db_path, username
-        )
-
-        if not success:
-            return False, None, message
+        self._reencrypt_all_entries(old_key, new_key, crypto_service, db_path)
 
         new_auth_hash, new_auth_params = self.key_derivation.create_auth_hash(new_password)
         new_encryption_params = self.key_derivation.create_encryption_params()
 
-        self.keychain.store_key("encryption_key", new_key, username)
-
-        return True, new_auth_hash, pbkdf2_salt
-
-    def _reencrypt_all_entries_transactional(self, old_key, new_key, new_password, crypto_service, db_path,
-                                             username="default"):
-        from src.database.db import get_all_vault_entries, update_vault_entry
-
-        conn = None
-        try:
-            conn = get_connection(db_path)
-            conn.execute("BEGIN TRANSACTION")
-
-            entries = get_all_vault_entries(db_path)
-
-            for entry in entries:
-                if entry.get('encrypted_password'):
-                    try:
-                        decrypted = crypto_service.decrypt(entry['encrypted_password'])
-                        reencrypted = crypto_service.encrypt(decrypted)
-
-                        cursor = conn.cursor()
-                        cursor.execute("""
-                            UPDATE vault_entries 
-                            SET encrypted_password = ?, updated_at = CURRENT_TIMESTAMP 
-                            WHERE id = ?
-                        """, (reencrypted, entry['id']))
-                    except Exception as e:
-                        conn.execute("ROLLBACK")
-                        return False, f"Failed to re-encrypt entry {entry['id']}: {str(e)}"
-
-            new_auth_hash, new_auth_params = self.key_derivation.create_auth_hash(new_password)
-            new_encryption_params = self.key_derivation.create_encryption_params()
-
+        with get_connection(db_path) as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 DELETE FROM key_store 
@@ -236,16 +197,11 @@ class MasterKeyManager(KeyManager):
                 VALUES (?, ?, ?, ?)
             """, ('encryption_params', json.dumps(new_encryption_params).encode('utf-8'), None, username))
 
-            conn.execute("COMMIT")
-            return True, "Success"
+            conn.commit()
 
-        except Exception as e:
-            if conn:
-                conn.execute("ROLLBACK")
-            return False, f"Transaction failed: {str(e)}"
-        finally:
-            if conn:
-                conn.close()
+        self.keychain.store_key("encryption_key", new_key, username)
+
+        return True, new_auth_hash, pbkdf2_salt
 
     def _reencrypt_all_entries(self, old_key, new_key, crypto_service, db_path):
         from src.database.db import get_all_vault_entries, update_vault_entry
