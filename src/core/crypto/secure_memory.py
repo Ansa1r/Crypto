@@ -1,69 +1,63 @@
 import ctypes
-import gc
-import secrets
+import platform
+import os
 
 
-def secure_zero(data):
-    if data is None or len(data) == 0:
-        return
+class SecureMemory:
+    def __init__(self):
+        self._is_windows = platform.system() == "Windows"
+        self._is_unix = platform.system() in ("Linux", "Darwin")
 
-    try:
-        if isinstance(data, bytearray):
-            data[:] = b'\x00' * len(data)
-        elif isinstance(data, memoryview):
-            ctypes.memset(ctypes.addressof(data.obj), 0, len(data))
-    except Exception:
-        dummy = secrets.token_bytes(len(data))
-        if isinstance(data, bytearray):
-            data[:] = dummy
+    def protect(self, data: bytes) -> bytes:
+        if not data:
+            return b''
 
-    gc.collect()
+        protected = bytearray(data)
 
+        if self._is_windows:
+            try:
+                ctypes.windll.kernel32.VirtualLock(
+                    ctypes.byref((ctypes.c_char * len(protected)).from_buffer(protected)), len(protected))
+            except:
+                pass
+        elif self._is_unix:
+            try:
+                libc = ctypes.CDLL(None)
+                libc.mlock(ctypes.byref((ctypes.c_char * len(protected)).from_buffer(protected)), len(protected))
+            except:
+                pass
 
-def secure_wipe_bytes(data):
-    del data
-    gc.collect()
+        return bytes(protected)
 
+    def unprotect(self, data: bytes) -> bytes:
+        if not data:
+            return b''
+        return bytes(data)
 
-class SecureBytes(bytearray):
-    def __del__(self):
-        secure_zero(self)
+    def wipe(self, data: bytes):
+        if not data:
+            return
 
-    def __exit__(self, *args):
-        secure_zero(self)
+        try:
+            length = len(data)
+            buf = bytearray(data)
 
+            for i in range(length):
+                buf[i] = 0
 
-def get_secure_buffer(size):
-    return SecureBytes(size)
+            if self._is_windows:
+                try:
+                    ctypes.windll.kernel32.VirtualUnlock(ctypes.byref((ctypes.c_char * length).from_buffer(buf)),
+                                                         length)
+                except:
+                    pass
+            elif self._is_unix:
+                try:
+                    libc = ctypes.CDLL(None)
+                    libc.munlock(ctypes.byref((ctypes.c_char * length).from_buffer(buf)), length)
+                except:
+                    pass
 
-
-def secure_wipe_str(s):
-    if not s:
-        return
-    length = len(s)
-    try:
-        buf = ctypes.create_string_buffer(s.encode('utf-8'))
-        ctypes.memset(ctypes.byref(buf), 0, length + 1)
-    except Exception:
-        pass
-    dummy = secrets.token_hex(length // 2 + 1)[:length]
-    s = dummy
-    del s
-    gc.collect()
-
-
-def secure_compare(a, b):
-    if isinstance(a, str) and isinstance(b, str):
-        a_bytes = a.encode('utf-8')
-        b_bytes = b.encode('utf-8')
-    elif isinstance(a, bytes) and isinstance(b, bytes):
-        a_bytes, b_bytes = a, b
-    else:
-        return False
-
-    result = secrets.compare_digest(a_bytes, b_bytes)
-    del a_bytes
-    del b_bytes
-    gc.collect()
-
-    return result
+            buf[:] = b'\x00' * length
+        except:
+            pass

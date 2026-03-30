@@ -1,8 +1,6 @@
 from pathlib import Path
 
-
 class ConfigManager:
-
     def __init__(self):
         self.base_dir = Path(__file__).resolve().parent.parent.parent
         self.db_path = self.base_dir / "cryptosafe.db"
