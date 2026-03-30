@@ -218,6 +218,10 @@ class CryptoSafeMainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        change_password_action = QAction("Change Master Password...", self)
+        change_password_action.triggered.connect(self.change_password)
+        file_menu.addAction(change_password_action)
+
         lock_action = QAction("Lock Vault", self)
         lock_action.triggered.connect(self.lock_vault)
         file_menu.addAction(lock_action)
@@ -257,6 +261,44 @@ class CryptoSafeMainWindow(QMainWindow):
         about_action = QAction("About", self)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
+
+    def change_password(self):
+        if state_manager.is_locked:
+            QMessageBox.warning(self, "Warning", "Please unlock the vault first")
+            return
+
+        if not self.current_db_path:
+            QMessageBox.warning(self, "Warning", "No vault is open")
+            return
+
+        from src.core.key_manager import KeyManager
+        from src.gui.change_password_dialog import ChangePasswordDialog
+        from src.database.db import get_pbkdf2_salt, has_master_password
+
+        if not has_master_password(self.current_db_path):
+            QMessageBox.critical(self, "Error", "No master password set for this vault")
+            return
+
+        key_manager = KeyManager()
+        stored_auth_hash = None
+
+        from src.database.db import get_connection
+        with get_connection(self.current_db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT key_data FROM key_store WHERE key_type = 'auth_hash' ORDER BY created_at DESC LIMIT 1")
+            row = cursor.fetchone()
+            if row:
+                stored_auth_hash = row['key_data'].decode('utf-8')
+
+        if not stored_auth_hash:
+            QMessageBox.critical(self, "Error", "Could not retrieve authentication data")
+            return
+
+        dialog = ChangePasswordDialog(self, key_manager, self.current_db_path, stored_auth_hash)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.load_entries()
+            add_audit_log("PasswordChanged", details="Master password changed", db_path=self.current_db_path)
 
     def _create_toolbar(self):
         toolbar = self.addToolBar("Main")
@@ -459,17 +501,18 @@ class CryptoSafeMainWindow(QMainWindow):
                 QMessageBox.critical(self, "Error", "Passwords do not match")
                 return
 
-            if len(password) < 4:
-                reply = QMessageBox.question(
-                    self, "Weak Password",
-                    "It is recommended to use at least 4 characters. Continue?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                )
-                if reply == QMessageBox.StandardButton.No:
-                    return
+            from src.core.crypto.key_derivation import KeyDerivation
+            kd = KeyDerivation()
+            is_valid, errors = kd.validate_password_strength(password)
+
+            if not is_valid:
+                error_msg = "Password does not meet security requirements:\n\n" + "\n".join(errors)
+                QMessageBox.critical(self, "Weak Password", error_msg)
+                return
 
             try:
                 self.current_db_path = db_path
+                from src.database.db import init_db, set_master_password, add_audit_log
                 init_db(db_path)
 
                 set_master_password(password, db_path)

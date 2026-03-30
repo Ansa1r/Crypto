@@ -1,17 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import Optional
 
-class KeyManager(ABC):
-    @abstractmethod
-    def get_encryption_key(self) -> Optional[bytes]:
-        pass
-
-    @abstractmethod
-    def is_unlocked(self) -> bool:
-        pass
-
 class EncryptionService(ABC):
-    def __init__(self, key_manager: KeyManager):
+    def __init__(self, key_manager):
         self.key_manager = key_manager
 
     @abstractmethod
@@ -19,11 +10,8 @@ class EncryptionService(ABC):
         pass
 
     @abstractmethod
-    def decrypt(self, ciphertext: bytes) -> bytes:
+    def decrypt(self, encrypted_data: bytes) -> bytes:
         pass
 
-    def _get_current_key(self) -> bytes:
-        key = self.key_manager.get_encryption_key()
-        if key is None or not self.key_manager.is_unlocked():
-            raise RuntimeError("Vault is locked or no encryption key available")
-        return key
+    def get_encryption_key(self) -> Optional[bytes]:
+        return self.key_manager.get_encryption_key()
