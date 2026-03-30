@@ -1,5 +1,5 @@
 import time
-from typing import Optional, Dict
+from typing import Optional, Dict, Callable
 from dataclasses import dataclass
 from enum import Enum
 
@@ -9,6 +9,7 @@ class AuthResult(Enum):
     FAILED = "failed"
     LOCKED = "locked"
     EXPIRED = "expired"
+    MFA_REQUIRED = "mfa_required"
 
 
 @dataclass
@@ -19,26 +20,64 @@ class SessionInfo:
     failed_attempts: int
     ip_address: Optional[str] = None
     device_id: Optional[str] = None
+    mfa_verified: bool = False
+
+
+class MFABase:
+    def verify(self, token: str) -> bool:
+        raise NotImplementedError
+
+    def generate_secret(self) -> str:
+        raise NotImplementedError
+
+    def get_uri(self, username: str, issuer: str) -> str:
+        raise NotImplementedError
 
 
 class AuthenticationManager:
-    def __init__(self, max_attempts: int = 5, lockout_duration: int = 300):
+    def __init__(self, max_attempts: int = 5, lockout_duration: int = 300, mfa_provider: Optional[MFABase] = None):
         self.max_attempts = max_attempts
         self.lockout_duration = lockout_duration
+        self.mfa_provider = mfa_provider
         self._failed_attempts: Dict[str, list] = {}
         self._locked_until: Dict[str, float] = {}
         self._sessions: Dict[str, SessionInfo] = {}
+        self._mfa_pending: Dict[str, SessionInfo] = {}
 
-    def authenticate(self, username: str, password: str, verifier) -> AuthResult:
+    def authenticate(self, username: str, password: str, verifier, mfa_token: Optional[str] = None) -> AuthResult:
         if self.is_locked(username):
             return AuthResult.LOCKED
 
+        if username in self._mfa_pending:
+            return self._verify_mfa(username, mfa_token)
+
         if verifier.verify(username, password):
+            if self.mfa_provider:
+                self._mfa_pending[username] = SessionInfo(
+                    username=username,
+                    login_time=time.time(),
+                    last_activity=time.time(),
+                    failed_attempts=0
+                )
+                return AuthResult.MFA_REQUIRED
             self._reset_attempts(username)
             return AuthResult.SUCCESS
         else:
             self._record_failed_attempt(username)
             return AuthResult.FAILED
+
+    def _verify_mfa(self, username: str, token: Optional[str]) -> AuthResult:
+        if not token:
+            return AuthResult.MFA_REQUIRED
+
+        if self.mfa_provider and self.mfa_provider.verify(token):
+            session = self._mfa_pending.pop(username)
+            session.mfa_verified = True
+            self._sessions[username] = session
+            self._reset_attempts(username)
+            return AuthResult.SUCCESS
+
+        return AuthResult.FAILED
 
     def _record_failed_attempt(self, username: str):
         now = time.time()
@@ -59,6 +98,8 @@ class AuthenticationManager:
             del self._failed_attempts[username]
         if username in self._locked_until:
             del self._locked_until[username]
+        if username in self._mfa_pending:
+            del self._mfa_pending[username]
 
     def is_locked(self, username: str) -> bool:
         if username not in self._locked_until:
@@ -81,6 +122,19 @@ class AuthenticationManager:
         recent = [t for t in self._failed_attempts[username] if now - t < 3600]
         return len(recent)
 
+    def is_mfa_required(self, username: str) -> bool:
+        return username in self._mfa_pending
+
+    def setup_mfa(self, username: str) -> Optional[str]:
+        if self.mfa_provider:
+            return self.mfa_provider.generate_secret()
+        return None
+
+    def get_mfa_uri(self, username: str, issuer: str = "CryptoSafe") -> Optional[str]:
+        if self.mfa_provider:
+            return self.mfa_provider.get_uri(username, issuer)
+        return None
+
 
 class SessionManager:
     def __init__(self, session_timeout: int = 3600, inactivity_timeout: int = 900):
@@ -96,7 +150,8 @@ class SessionManager:
             last_activity=now,
             failed_attempts=0,
             ip_address=ip_address,
-            device_id=device_id
+            device_id=device_id,
+            mfa_verified=True
         )
         return True
 
@@ -121,6 +176,9 @@ class SessionManager:
             self.destroy_session()
             return False
 
+        if not self.current_session.mfa_verified:
+            return False
+
         return True
 
     def get_session_info(self) -> Optional[dict]:
@@ -131,7 +189,8 @@ class SessionManager:
             'login_time': self.current_session.login_time,
             'last_activity': self.current_session.last_activity,
             'duration': time.time() - self.current_session.login_time,
-            'inactive': time.time() - self.current_session.last_activity
+            'inactive': time.time() - self.current_session.last_activity,
+            'mfa_verified': self.current_session.mfa_verified
         }
 
     def touch(self):

@@ -1,11 +1,13 @@
+import time
+
 import keyring
 import json
 import os
 from pathlib import Path
 from typing import Optional, Dict, Any
-from .secure_memory import secure_zero
-from datetime import time
-
+from cryptography.fernet import Fernet
+import secrets
+import base64
 
 class KeychainStorage:
     SERVICE_NAME = "CryptoSafe"
@@ -14,6 +16,7 @@ class KeychainStorage:
         self.use_keychain = use_keychain and self._is_keychain_available()
         self.fallback_dir = Path.home() / ".cryptosafe"
         self.fallback_file = self.fallback_dir / "key_storage.json"
+        self._fallback_key = self._get_or_create_fallback_key()
         self._ensure_fallback_dir()
 
     def _is_keychain_available(self) -> bool:
@@ -25,6 +28,15 @@ class KeychainStorage:
 
     def _ensure_fallback_dir(self):
         self.fallback_dir.mkdir(exist_ok=True, mode=0o700)
+
+    def _get_or_create_fallback_key(self) -> bytes:
+        key_file = self.fallback_dir / "fallback.key"
+        if key_file.exists():
+            return key_file.read_bytes()
+        key = Fernet.generate_key()
+        key_file.write_bytes(key)
+        key_file.chmod(0o600)
+        return key
 
     def store_key(self, key_type: str, key_data: bytes, username: str = "default") -> bool:
         if self.use_keychain:
@@ -68,8 +80,10 @@ class KeychainStorage:
 
     def _fallback_store(self, key_type: str, key_data: bytes, username: str) -> bool:
         try:
+            fernet = Fernet(self._fallback_key)
+            encrypted_key = fernet.encrypt(key_data)
             storage = self._load_fallback_storage()
-            storage[f"{username}_{key_type}"] = key_data.hex()
+            storage[f"{username}_{key_type}"] = encrypted_key.hex()
             self._save_fallback_storage(storage)
             return True
         except:
@@ -77,9 +91,13 @@ class KeychainStorage:
 
     def _fallback_retrieve(self, key_type: str, username: str) -> Optional[bytes]:
         try:
+            fernet = Fernet(self._fallback_key)
             storage = self._load_fallback_storage()
-            data = storage.get(f"{username}_{key_type}")
-            return bytes.fromhex(data) if data else None
+            encrypted_hex = storage.get(f"{username}_{key_type}")
+            if not encrypted_hex:
+                return None
+            encrypted_data = bytes.fromhex(encrypted_hex)
+            return fernet.decrypt(encrypted_data)
         except:
             return None
 
@@ -125,43 +143,37 @@ class KeychainStorage:
         except:
             pass
 
-
 class SecureKeyCache:
     def __init__(self, timeout: int = 3600):
-        self._cache: Dict[str, bytes] = {}
-        self._timestamps: Dict[str, float] = {}
-        self._timeout = timeout
+        self.timeout = timeout
+        self._cache: Dict[str, tuple] = {}
 
-    def set(self, key_id: str, key_data: bytes):
-        from .secure_memory import ProtectedMemory
-        with ProtectedMemory(key_data) as protected:
-            self._cache[key_id] = bytes(protected)
-            self._timestamps[key_id] = time.time()
+    def set(self, key: str, value: bytes):
+        from .secure_memory import SecureBytes
+        secure_value = SecureBytes(value)
+        self._cache[key] = (secure_value, time.time())
 
-    def get(self, key_id: str) -> Optional[bytes]:
-        if key_id not in self._cache:
+    def get(self, key: str) -> Optional[bytes]:
+        import time
+        if key not in self._cache:
             return None
 
-        if time.time() - self._timestamps[key_id] > self._timeout:
-            self.delete(key_id)
+        value, timestamp = self._cache[key]
+        if time.time() - timestamp > self.timeout:
+            del self._cache[key]
             return None
 
-        return self._cache[key_id]
+        return bytes(value)
 
-    def delete(self, key_id: str):
-        if key_id in self._cache:
+    def delete(self, key: str):
+        if key in self._cache:
             from .secure_memory import secure_zero
-            secure_zero(self._cache[key_id])
-            del self._cache[key_id]
-            del self._timestamps[key_id]
+            value, _ = self._cache[key]
+            secure_zero(value)
+            del self._cache[key]
 
     def clear_all(self):
-        for key_id in list(self._cache.keys()):
-            self.delete(key_id)
-
-    def get_active_keys(self) -> list:
-        now = time.time()
-        return [
-            key_id for key_id, ts in self._timestamps.items()
-            if now - ts <= self._timeout
-        ]
+        from .secure_memory import secure_zero
+        for value, _ in self._cache.values():
+            secure_zero(value)
+        self._cache.clear()
