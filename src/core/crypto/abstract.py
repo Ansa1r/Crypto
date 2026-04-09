@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Optional
 
+
 class EncryptionService(ABC):
     def __init__(self, key_manager):
         self.key_manager = key_manager

@@ -5,6 +5,7 @@ from src.core.crypto.authentication import AuthenticationService
 from src.core.crypto.key_storage import KeyStorage
 from src.core.crypto.multi_key_manager import MultiKeyManager
 from src.core.crypto.auto_lock_manager import AutoLockManager, LockReason
+from src.core.crypto.aes_gcm import AES256GCMEncryptionService
 from src.core.config import ConfigManager
 from datetime import datetime
 
@@ -28,6 +29,11 @@ class KeyManager:
 
     def set_encryption_service(self, encryption_service):
         self._encryption_service = encryption_service
+
+    def get_encryption_service(self):
+        if self._encryption_service is None:
+            self._encryption_service = AES256GCMEncryptionService(self)
+        return self._encryption_service
 
     def initialize_vault(self, master_password: str, use_keychain: bool = True, store_in_keychain: bool = True):
         auth_hash, salt = self.key_derivation.create_auth_hash(master_password)
@@ -232,6 +238,8 @@ class KeyManager:
             if progress_callback:
                 progress_callback(0, total_entries, "Starting re-encryption...", 0, 0)
 
+            encryption_service = self.get_encryption_service()
+
             for idx, entry in enumerate(all_entries):
                 if pause_check_callback:
                     pause_check_callback()
@@ -240,11 +248,11 @@ class KeyManager:
                     progress_callback(idx + 1, total_entries, f"Re-encrypting: {entry.get('title', 'Unknown')}",
                                       idx, 0)
 
-                decrypted_password = self._decrypt_entry_password(entry.get('password', ''), old_key)
+                decrypted_password = self._decrypt_entry_password(entry.get('password', ''), old_key, encryption_service)
                 if decrypted_password is None:
                     continue
 
-                encrypted_password = self._encrypt_entry_password(decrypted_password, new_enc_key)
+                encrypted_password = self._encrypt_entry_password(decrypted_password, new_enc_key, encryption_service)
                 if encrypted_password is None:
                     continue
 
@@ -278,27 +286,27 @@ class KeyManager:
                 restore_db(backup_path, db_path)
             return False, f"Error during password change: {str(e)}"
 
-    def _decrypt_entry_password(self, encrypted_password: str, key: bytes) -> Optional[str]:
+    def _decrypt_entry_password(self, encrypted_password: str, key: bytes, encryption_service) -> Optional[str]:
         try:
             if not encrypted_password or encrypted_password == '':
                 return ''
 
-            if self._encryption_service:
+            if encryption_service:
                 encrypted_bytes = bytes.fromhex(encrypted_password)
-                decrypted_bytes = self._encryption_service.decrypt(encrypted_bytes)
+                decrypted_bytes = encryption_service.decrypt(encrypted_bytes)
                 return decrypted_bytes.decode('utf-8')
             else:
                 return encrypted_password
         except Exception:
             return None
 
-    def _encrypt_entry_password(self, password: str, key: bytes) -> Optional[str]:
+    def _encrypt_entry_password(self, password: str, key: bytes, encryption_service) -> Optional[str]:
         try:
             if not password:
                 return ''
 
-            if self._encryption_service:
-                encrypted_bytes = self._encryption_service.encrypt(password.encode('utf-8'))
+            if encryption_service:
+                encrypted_bytes = encryption_service.encrypt(password.encode('utf-8'))
                 return encrypted_bytes.hex()
             else:
                 return password

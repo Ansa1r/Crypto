@@ -1,13 +1,15 @@
+# src/database/db.py
 import sqlite3
 from pathlib import Path
 import shutil
 from datetime import datetime
 import json
+import uuid
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DEFAULT_DB_PATH = BASE_DIR / "cryptosafe.db"
 DB_PATH = DEFAULT_DB_PATH
-DB_VERSION = 4
+DB_VERSION = 6
 
 
 def get_connection(db_path=DB_PATH):
@@ -20,130 +22,74 @@ def init_db(db_path=DB_PATH):
     conn = get_connection(db_path)
     cursor = conn.cursor()
     cursor.execute("PRAGMA foreign_keys = ON;")
-    cursor.execute("PRAGMA user_version;")
-    version = cursor.fetchone()[0]
 
-    if version == 0:
-        _create_initial_schema(cursor)
-        cursor.execute("PRAGMA user_version = 4;")
-        _initialize_default_settings(cursor)
+    _create_tables(cursor)
+
+    cursor.execute("PRAGMA user_version = {}".format(DB_VERSION))
+    _initialize_default_settings(cursor)
 
     conn.commit()
     conn.close()
 
-    if version > 0 and version < DB_VERSION:
-        migrate(db_path)
 
+def _create_tables(cursor):
+    cursor.execute("DROP TABLE IF EXISTS vault_entries")
+    cursor.execute("DROP TABLE IF EXISTS deleted_entries")
+    cursor.execute("DROP TABLE IF EXISTS audit_log")
+    cursor.execute("DROP TABLE IF EXISTS settings")
+    cursor.execute("DROP TABLE IF EXISTS key_store")
 
-def _create_initial_schema(cursor):
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS vault_entries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            username TEXT,
-            password TEXT NOT NULL,
-            url TEXT,
-            notes TEXT,
-            tags TEXT,
+        CREATE TABLE vault_entries (
+            id TEXT PRIMARY KEY,
+            encrypted_data BLOB NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
-        );
+        )
     """)
 
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS audit_log (
+        CREATE TABLE deleted_entries (
+            id TEXT PRIMARY KEY,
+            original_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            deleted_data BLOB NOT NULL,
+            deleted_at TEXT NOT NULL,
+            expires_at REAL NOT NULL
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE audit_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             action TEXT NOT NULL,
             timestamp TEXT NOT NULL,
-            entry_id INTEGER,
+            entry_id TEXT,
             details TEXT
-        );
+        )
     """)
 
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS settings (
+        CREATE TABLE settings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             setting_key TEXT UNIQUE NOT NULL,
             setting_value TEXT,
             setting_type TEXT DEFAULT 'string',
             updated_at TEXT,
             description TEXT
-        );
+        )
     """)
 
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS key_store (
+        CREATE TABLE key_store (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             key_type TEXT NOT NULL,
             key_data BLOB NOT NULL,
             version INTEGER DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             params TEXT
-        );
+        )
     """)
-
-
-def migrate(db_path):
-    conn = get_connection(db_path)
-    cursor = conn.cursor()
-
-    cursor.execute("PRAGMA user_version")
-    current_version = cursor.fetchone()[0]
-
-    if current_version < DB_VERSION:
-        if current_version == 0:
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS key_store (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    key_type TEXT NOT NULL,
-                    key_data BLOB NOT NULL,
-                    version INTEGER DEFAULT 1,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    params TEXT
-                );
-            """)
-            cursor.execute("PRAGMA user_version = 1;")
-
-        if current_version < 1:
-            cursor.execute("""
-                ALTER TABLE key_store ADD COLUMN params TEXT;
-            """)
-            cursor.execute("PRAGMA user_version = 2;")
-
-        if current_version < 2:
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS key_store_new (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    key_type TEXT NOT NULL,
-                    key_data BLOB NOT NULL,
-                    version INTEGER DEFAULT 1,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    params TEXT
-                );
-            """)
-
-            cursor.execute("""
-                INSERT INTO key_store_new (id, key_type, key_data, version, created_at, params)
-                SELECT id, key_type, key_data, version, created_at, params FROM key_store;
-            """)
-
-            cursor.execute("DROP TABLE IF EXISTS key_store")
-            cursor.execute("ALTER TABLE key_store_new RENAME TO key_store")
-            cursor.execute("PRAGMA user_version = 3;")
-
-        if current_version < 3:
-            cursor.execute("""
-                ALTER TABLE settings ADD COLUMN setting_type TEXT DEFAULT 'string';
-                ALTER TABLE settings ADD COLUMN updated_at TEXT;
-                ALTER TABLE settings ADD COLUMN description TEXT;
-            """)
-
-            _initialize_default_settings(cursor)
-            cursor.execute("PRAGMA user_version = 4;")
-
-        conn.commit()
-
-    conn.close()
 
 
 def _initialize_default_settings(cursor):
@@ -473,75 +419,131 @@ def has_master_password(db_path=DB_PATH):
 
 
 def add_vault_entry(title, username, password, url, notes, tags, db_path=DB_PATH):
+    from src.core.key_manager import KeyManager
+    from src.core.crypto.aes_gcm import AES256GCMEncryptionService
+
+    key_manager = KeyManager()
+    encryption_service = AES256GCMEncryptionService(key_manager)
+
+    entry_id = str(uuid.uuid4())
     now = datetime.now().isoformat()
+
+    payload = {
+        'id': entry_id,
+        'title': title,
+        'username': username or '',
+        'password': password,
+        'url': url or '',
+        'notes': notes or '',
+        'tags': tags or '',
+        'created_at': now,
+        'updated_at': now,
+        'version': 1
+    }
+
+    plaintext = json.dumps(payload).encode('utf-8')
+    encrypted_data = encryption_service.encrypt(plaintext)
+
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO vault_entries (title, username, password, url, notes, tags, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (title, username, password, url, notes, tags, now, now))
+            INSERT INTO vault_entries (id, encrypted_data, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+        """, (entry_id, encrypted_data, now, now))
         conn.commit()
-        return cursor.lastrowid
+
+    return entry_id
 
 
 def get_vault_entry(entry_id, db_path=DB_PATH):
+    from src.core.key_manager import KeyManager
+    from src.core.crypto.aes_gcm import AES256GCMEncryptionService
+
+    key_manager = KeyManager()
+    encryption_service = AES256GCMEncryptionService(key_manager)
+
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM vault_entries WHERE id = ?", (entry_id,))
+        cursor.execute("SELECT encrypted_data, created_at, updated_at FROM vault_entries WHERE id = ?", (entry_id,))
         row = cursor.fetchone()
-        if row:
-            return dict(row)
-        return None
+
+        if not row:
+            return None
+
+        encrypted_data = row['encrypted_data']
+        plaintext = encryption_service.decrypt(encrypted_data)
+        entry = json.loads(plaintext.decode('utf-8'))
+        return entry
 
 
 def get_all_vault_entries(db_path=DB_PATH):
+    from src.core.key_manager import KeyManager
+    from src.core.crypto.aes_gcm import AES256GCMEncryptionService
+
+    key_manager = KeyManager()
+    encryption_service = AES256GCMEncryptionService(key_manager)
+
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM vault_entries ORDER BY title")
-        return [dict(row) for row in cursor.fetchall()]
+        cursor.execute("SELECT id, encrypted_data, created_at, updated_at FROM vault_entries")
+        rows = cursor.fetchall()
+
+        entries = []
+        for row in rows:
+            encrypted_data = row['encrypted_data']
+            try:
+                plaintext = encryption_service.decrypt(encrypted_data)
+                entry = json.loads(plaintext.decode('utf-8'))
+                entries.append(entry)
+            except Exception:
+                continue
+
+        return entries
 
 
 def update_vault_entry(entry_id, title=None, username=None, password=None, url=None, notes=None, tags=None,
                        db_path=DB_PATH):
+    from src.core.key_manager import KeyManager
+    from src.core.crypto.aes_gcm import AES256GCMEncryptionService
+
+    key_manager = KeyManager()
+    encryption_service = AES256GCMEncryptionService(key_manager)
+
+    existing = get_vault_entry(entry_id, db_path)
+    if not existing:
+        return False
+
+    now = datetime.now().isoformat()
+
+    if title is not None:
+        existing['title'] = title
+    if username is not None:
+        existing['username'] = username
+    if password is not None:
+        existing['password'] = password
+    if url is not None:
+        existing['url'] = url
+    if notes is not None:
+        existing['notes'] = notes
+    if tags is not None:
+        existing['tags'] = tags
+
+    existing['updated_at'] = now
+    existing['version'] = existing.get('version', 1) + 1
+
+    plaintext = json.dumps(existing).encode('utf-8')
+    encrypted_data = encryption_service.encrypt(plaintext)
+
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE vault_entries 
+            SET encrypted_data = ?, updated_at = ?
+            WHERE id = ?
+        """, (encrypted_data, now, entry_id))
+        conn.commit()
 
-        current = get_vault_entry(entry_id, db_path)
-        if not current:
-            return False
-
-        updates = []
-        params = []
-
-        if title is not None:
-            updates.append("title = ?")
-            params.append(title)
-        if username is not None:
-            updates.append("username = ?")
-            params.append(username)
-        if password is not None:
-            updates.append("password = ?")
-            params.append(password)
-        if url is not None:
-            updates.append("url = ?")
-            params.append(url)
-        if notes is not None:
-            updates.append("notes = ?")
-            params.append(notes)
-        if tags is not None:
-            updates.append("tags = ?")
-            params.append(tags)
-
-        if updates:
-            updates.append("updated_at = ?")
-            params.append(datetime.now().isoformat())
-            params.append(entry_id)
-
-            query = f"UPDATE vault_entries SET {', '.join(updates)} WHERE id = ?"
-            cursor.execute(query, params)
-            conn.commit()
-            return True
-        return False
+    return True
 
 
 def delete_vault_entry(entry_id, db_path=DB_PATH):
@@ -553,14 +555,19 @@ def delete_vault_entry(entry_id, db_path=DB_PATH):
 
 
 def search_vault_entries(search_term, db_path=DB_PATH):
-    with get_connection(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT * FROM vault_entries 
-            WHERE title LIKE ? OR username LIKE ? OR url LIKE ? OR tags LIKE ?
-            ORDER BY title
-        """, (f'%{search_term}%', f'%{search_term}%', f'%{search_term}%', f'%{search_term}%'))
-        return [dict(row) for row in cursor.fetchall()]
+    entries = get_all_vault_entries(db_path)
+    search_lower = search_term.lower()
+
+    results = []
+    for entry in entries:
+        if (search_lower in entry.get('title', '').lower() or
+                search_lower in entry.get('username', '').lower() or
+                search_lower in entry.get('url', '').lower() or
+                search_lower in entry.get('tags', '').lower() or
+                search_lower in entry.get('notes', '').lower()):
+            results.append(entry)
+
+    return results
 
 
 def add_audit_log(action, entry_id=None, details=None, db_path=DB_PATH):
