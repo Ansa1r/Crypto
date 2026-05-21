@@ -1,20 +1,33 @@
-from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem, QHeaderView, QMenu, QAbstractItemView, QApplication, QStyle, \
-    QStyleOptionButton, QPushButton, QWidget, QHBoxLayout
-from PyQt6.QtCore import Qt, pyqtSignal, QRect, QPoint
-from PyQt6.QtGui import QAction, QKeySequence, QIcon, QPixmap, QPainter, QColor
+from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem, QHeaderView, QMenu, QAbstractItemView, QApplication, \
+    QProgressDialog
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QThread
+from PyQt6.QtGui import QAction, QKeySequence
 
 
-class PasswordVisibilityDelegate:
-    def __init__(self, table):
-        self.table = table
-        self.visible_rows = set()
+class LoadEntriesThread(QThread):
+    chunk_loaded = pyqtSignal(list, int)
+    finished = pyqtSignal()
+    progress = pyqtSignal(int, int)
 
-    def toggle_visibility(self, row, item):
-        if row in self.visible_rows:
-            self.visible_rows.discard(row)
-        else:
-            self.visible_rows.add(row)
-        self.table.update_entry_display(row)
+    def __init__(self, entries_data, chunk_size=100):
+        super().__init__()
+        self.entries_data = entries_data
+        self.chunk_size = chunk_size
+        self._is_running = True
+
+    def run(self):
+        total = len(self.entries_data)
+        for i in range(0, total, self.chunk_size):
+            if not self._is_running:
+                break
+            chunk = self.entries_data[i:i + self.chunk_size]
+            self.chunk_loaded.emit(chunk, i)
+            self.progress.emit(min(i + self.chunk_size, total), total)
+            self.msleep(10)
+        self.finished.emit()
+
+    def stop(self):
+        self._is_running = False
 
 
 class SecureTable(QTreeWidget):
@@ -44,8 +57,18 @@ class SecureTable(QTreeWidget):
         self.setUniformRowHeights(True)
 
         self._global_password_visible = False
-        self._eye_icons = {}
-        self._create_eye_icons()
+        self._all_entries = []
+        self._visible_entries = []
+        self._load_thread = None
+        self._is_loading = False
+        self._batch_update_timer = QTimer()
+        self._batch_update_timer.setSingleShot(True)
+        self._batch_update_timer.timeout.connect(self._apply_batch_update)
+        self._pending_entries = []
+        self._deferred_updates = []
+        self._update_timer = QTimer()
+        self._update_timer.setSingleShot(True)
+        self._update_timer.timeout.connect(self._apply_deferred_updates)
 
         self.setColumnWidth(0, 180)
         self.setColumnWidth(1, 150)
@@ -53,28 +76,9 @@ class SecureTable(QTreeWidget):
         self.setColumnWidth(3, 120)
         self.setColumnWidth(4, 100)
 
+        self.setUpdatesEnabled(True)
+
         self.installEventFilter(self)
-
-    def _create_eye_icons(self):
-        eye_open_pixmap = QPixmap(16, 16)
-        eye_open_pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(eye_open_pixmap)
-        painter.setPen(QColor(100, 100, 100))
-        painter.drawEllipse(4, 4, 8, 8)
-        painter.drawLine(8, 2, 8, 14)
-        painter.drawLine(2, 8, 14, 8)
-        painter.end()
-
-        eye_closed_pixmap = QPixmap(16, 16)
-        eye_closed_pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(eye_closed_pixmap)
-        painter.setPen(QColor(100, 100, 100))
-        painter.drawEllipse(4, 4, 8, 8)
-        painter.drawLine(2, 2, 14, 14)
-        painter.end()
-
-        self._eye_icons['open'] = QIcon(eye_open_pixmap)
-        self._eye_icons['closed'] = QIcon(eye_closed_pixmap)
 
     def mask_username(self, username: str) -> str:
         if not username:
@@ -88,7 +92,7 @@ class SecureTable(QTreeWidget):
             return ""
         return "•" * len(password)
 
-    def add_entry(self, entry: dict) -> QTreeWidgetItem:
+    def create_item_from_entry(self, entry: dict) -> QTreeWidgetItem:
         if self._global_password_visible:
             password_display = entry.get('password', '')
             username_display = entry.get('username', '')
@@ -114,7 +118,6 @@ class SecureTable(QTreeWidget):
         item.setData(4, Qt.ItemDataRole.UserRole, entry.get('notes', ''))
         item.setData(5, Qt.ItemDataRole.UserRole, entry.get('tags', ''))
 
-        self.addTopLevelItem(item)
         return item
 
     def extract_domain(self, url: str) -> str:
@@ -129,6 +132,98 @@ class SecureTable(QTreeWidget):
             url_lower = url_lower[4:]
         domain = url_lower.split('/')[0]
         return domain
+
+    def load_entries_async(self, entries: list, parent_widget=None):
+        if self._load_thread and self._load_thread.isRunning():
+            self._load_thread.stop()
+            self._load_thread.wait()
+
+        self._all_entries = entries
+        self._visible_entries = entries.copy()
+        self.clear()
+
+        if len(entries) > 500:
+            self.setSortingEnabled(False)
+            self._is_loading = True
+
+            progress = None
+            if parent_widget:
+                progress = QProgressDialog("Loading entries...", "Cancel", 0, len(entries), parent_widget)
+                progress.setWindowModality(Qt.WindowModality.WindowModal)
+                progress.setMinimumDuration(200)
+
+            self._load_thread = LoadEntriesThread(entries, chunk_size=100)
+
+            def on_chunk_loaded(chunk, start_index):
+                if progress and progress.wasCanceled():
+                    self._load_thread.stop()
+                    return
+                for entry in chunk:
+                    item = self.create_item_from_entry(entry)
+                    self.addTopLevelItem(item)
+                QApplication.processEvents()
+
+            def on_progress(current, total):
+                if progress:
+                    progress.setValue(current)
+
+            def on_finished():
+                self._is_loading = False
+                self.setSortingEnabled(True)
+                if progress:
+                    progress.close()
+
+            self._load_thread.chunk_loaded.connect(on_chunk_loaded)
+            self._load_thread.progress.connect(on_progress)
+            self._load_thread.finished.connect(on_finished)
+            self._load_thread.start()
+        else:
+            for entry in entries:
+                item = self.create_item_from_entry(entry)
+                self.addTopLevelItem(item)
+
+    def load_entries_sync(self, entries: list):
+        self.setUpdatesEnabled(False)
+        self.clear()
+
+        for entry in entries:
+            item = self.create_item_from_entry(entry)
+            self.addTopLevelItem(item)
+
+        self.setUpdatesEnabled(True)
+
+    def add_entry_fast(self, entry: dict):
+        self._pending_entries.append(entry)
+        if not self._batch_update_timer.isActive():
+            self._batch_update_timer.start(50)
+
+    def _apply_batch_update(self):
+        if not self._pending_entries:
+            return
+
+        self.setUpdatesEnabled(False)
+        for entry in self._pending_entries:
+            item = self.create_item_from_entry(entry)
+            self.addTopLevelItem(item)
+            self._all_entries.append(entry)
+            self._visible_entries.append(entry)
+        self._pending_entries.clear()
+        self.setUpdatesEnabled(True)
+
+    def update_entry_deferred(self, entry: dict):
+        self._deferred_updates.append(entry)
+        if not self._update_timer.isActive():
+            self._update_timer.start(100)
+
+    def _apply_deferred_updates(self):
+        if not self._deferred_updates:
+            return
+
+        self.setUpdatesEnabled(False)
+        for entry in self._deferred_updates:
+            self.update_entry_in_table(entry)
+        self._deferred_updates.clear()
+        self.setUpdatesEnabled(True)
 
     def update_entry_display(self, row):
         item = self.topLevelItem(row)
@@ -146,8 +241,10 @@ class SecureTable(QTreeWidget):
             item.setText(3, self.mask_password(password))
 
     def refresh_all_displays(self):
+        self.setUpdatesEnabled(False)
         for i in range(self.topLevelItemCount()):
             self.update_entry_display(i)
+        self.setUpdatesEnabled(True)
 
     def set_global_password_visibility(self, visible: bool):
         self._global_password_visible = visible
@@ -158,11 +255,6 @@ class SecureTable(QTreeWidget):
 
     def toggle_global_password_visibility(self):
         self.set_global_password_visibility(not self._global_password_visible)
-
-    def load_entries(self, entries: list):
-        self.clear()
-        for entry in entries:
-            self.add_entry(entry)
 
     def get_selected_entries(self) -> list:
         selected_items = self.selectedItems()
@@ -289,6 +381,8 @@ class SecureTable(QTreeWidget):
         if item:
             index = self.indexOfTopLevelItem(item)
             self.takeTopLevelItem(index)
+            self._all_entries = [e for e in self._all_entries if e.get('id') != entry_id]
+            self._visible_entries = [e for e in self._visible_entries if e.get('id') != entry_id]
             return True
         return False
 
@@ -326,6 +420,15 @@ class SecureTable(QTreeWidget):
             item.setData(4, Qt.ItemDataRole.UserRole, entry.get('notes', ''))
             item.setData(5, Qt.ItemDataRole.UserRole, entry.get('tags', ''))
 
+            for i, e in enumerate(self._all_entries):
+                if e.get('id') == entry.get('id'):
+                    self._all_entries[i] = entry
+                    break
+            for i, e in enumerate(self._visible_entries):
+                if e.get('id') == entry.get('id'):
+                    self._visible_entries[i] = entry
+                    break
+
     def clear_selection(self):
         self.clearSelection()
 
@@ -335,7 +438,12 @@ class SecureTable(QTreeWidget):
     def get_entry_count(self) -> int:
         return self.topLevelItemCount()
 
+    def get_total_entry_count(self) -> int:
+        return len(self._all_entries)
+
     def sort_by_column(self, column: int, order: Qt.SortOrder = None):
+        if self._is_loading:
+            return
         if order is None:
             current_order = self.header().sortIndicatorOrder()
             new_order = Qt.SortOrder.AscendingOrder if current_order == Qt.SortOrder.DescendingOrder else Qt.SortOrder.DescendingOrder
@@ -366,6 +474,30 @@ class SecureTable(QTreeWidget):
                 self.header().moveSection(self.header().visualIndex(i), visual_index)
         if 'sort_column' in state and 'sort_order' in state:
             self.sortByColumn(state['sort_column'], state['sort_order'])
+
+    def filter_entries(self, filter_func):
+        if self._is_loading:
+            return
+        self.setUpdatesEnabled(False)
+        self.clear()
+        filtered = [e for e in self._all_entries if filter_func(e)]
+        self._visible_entries = filtered
+        for entry in filtered:
+            item = self.create_item_from_entry(entry)
+            self.addTopLevelItem(item)
+        self.setUpdatesEnabled(True)
+        return len(filtered)
+
+    def reset_filter(self):
+        if self._is_loading:
+            return
+        self.setUpdatesEnabled(False)
+        self.clear()
+        self._visible_entries = self._all_entries.copy()
+        for entry in self._all_entries:
+            item = self.create_item_from_entry(entry)
+            self.addTopLevelItem(item)
+        self.setUpdatesEnabled(True)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Delete:

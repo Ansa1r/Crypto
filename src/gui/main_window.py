@@ -539,17 +539,29 @@ class CryptoSafeMainWindow(QMainWindow):
             return
 
         self.current_entries = get_all_vault_entries(self.current_db_path)
-        self.table.load_entries(self.current_entries)
+        self.table.load_entries_async(self.current_entries, self)
         self.status_bar.showMessage(f"Loaded {len(self.current_entries)} entries")
 
     def search_entries(self, text):
-        if not self.current_db_path or not text:
-            self.load_entries()
+        if not self.current_db_path:
             return
 
-        results = search_vault_entries(text, self.current_db_path)
-        self.table.load_entries(results)
-        self.status_bar.showMessage(f"Found {len(results)} entries")
+        if not text:
+            self.table.reset_filter()
+            self.status_bar.showMessage(f"Showing {len(self.current_entries)} entries")
+            return
+
+        search_lower = text.lower()
+
+        def filter_func(entry):
+            return (search_lower in entry.get('title', '').lower() or
+                    search_lower in entry.get('username', '').lower() or
+                    search_lower in entry.get('url', '').lower() or
+                    search_lower in entry.get('tags', '').lower() or
+                    search_lower in entry.get('notes', '').lower())
+
+        filtered_count = self.table.filter_entries(filter_func)
+        self.status_bar.showMessage(f"Found {filtered_count} entries matching '{text}'")
 
     def update_status(self):
         if state_manager.is_locked:
@@ -742,8 +754,8 @@ class CryptoSafeMainWindow(QMainWindow):
                     'created_at': datetime.now().isoformat(),
                     'updated_at': datetime.now().isoformat()
                 }
-                self.table.add_entry(new_entry)
                 self.current_entries.append(new_entry)
+                self.table.add_entry_fast(new_entry)
 
                 QMessageBox.information(self, "Success", "Entry added successfully")
             except Exception as e:
@@ -793,11 +805,11 @@ class CryptoSafeMainWindow(QMainWindow):
                     'created_at': entry.get('created_at', datetime.now().isoformat()),
                     'updated_at': datetime.now().isoformat()
                 }
-                self.table.update_entry_in_table(updated_entry)
                 for i, e in enumerate(self.current_entries):
                     if e['id'] == entry_id:
                         self.current_entries[i] = updated_entry
                         break
+                self.table.update_entry_deferred(updated_entry)
 
                 QMessageBox.information(self, "Success", "Entry updated successfully")
             except Exception as e:
