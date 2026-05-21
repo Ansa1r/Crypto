@@ -1,6 +1,20 @@
-from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem, QHeaderView, QMenu, QAbstractItemView, QApplication
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QAction, QKeySequence
+from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem, QHeaderView, QMenu, QAbstractItemView, QApplication, QStyle, \
+    QStyleOptionButton, QPushButton, QWidget, QHBoxLayout
+from PyQt6.QtCore import Qt, pyqtSignal, QRect, QPoint
+from PyQt6.QtGui import QAction, QKeySequence, QIcon, QPixmap, QPainter, QColor
+
+
+class PasswordVisibilityDelegate:
+    def __init__(self, table):
+        self.table = table
+        self.visible_rows = set()
+
+    def toggle_visibility(self, row, item):
+        if row in self.visible_rows:
+            self.visible_rows.discard(row)
+        else:
+            self.visible_rows.add(row)
+        self.table.update_entry_display(row)
 
 
 class SecureTable(QTreeWidget):
@@ -14,7 +28,7 @@ class SecureTable(QTreeWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setHeaderLabels(["Title", "Username", "URL", "Last Modified"])
+        self.setHeaderLabels(["Title", "Username", "URL", "Password", "Last Modified"])
         self.header().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.header().setStretchLastSection(True)
         self.header().setSectionsMovable(True)
@@ -29,14 +43,38 @@ class SecureTable(QTreeWidget):
         self.setRootIsDecorated(False)
         self.setUniformRowHeights(True)
 
-        self._password_visible = False
+        self._global_password_visible = False
+        self._eye_icons = {}
+        self._create_eye_icons()
 
-        self.setColumnWidth(0, 200)
+        self.setColumnWidth(0, 180)
         self.setColumnWidth(1, 150)
-        self.setColumnWidth(2, 200)
+        self.setColumnWidth(2, 180)
         self.setColumnWidth(3, 120)
+        self.setColumnWidth(4, 100)
 
         self.installEventFilter(self)
+
+    def _create_eye_icons(self):
+        eye_open_pixmap = QPixmap(16, 16)
+        eye_open_pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(eye_open_pixmap)
+        painter.setPen(QColor(100, 100, 100))
+        painter.drawEllipse(4, 4, 8, 8)
+        painter.drawLine(8, 2, 8, 14)
+        painter.drawLine(2, 8, 14, 8)
+        painter.end()
+
+        eye_closed_pixmap = QPixmap(16, 16)
+        eye_closed_pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(eye_closed_pixmap)
+        painter.setPen(QColor(100, 100, 100))
+        painter.drawEllipse(4, 4, 8, 8)
+        painter.drawLine(2, 2, 14, 14)
+        painter.end()
+
+        self._eye_icons['open'] = QIcon(eye_open_pixmap)
+        self._eye_icons['closed'] = QIcon(eye_closed_pixmap)
 
     def mask_username(self, username: str) -> str:
         if not username:
@@ -45,10 +83,18 @@ class SecureTable(QTreeWidget):
             return "••••"
         return username[:4] + "••••"
 
+    def mask_password(self, password: str) -> str:
+        if not password:
+            return ""
+        return "•" * len(password)
+
     def add_entry(self, entry: dict) -> QTreeWidgetItem:
-        username_display = self.mask_username(entry.get('username', ''))
-        if self._password_visible:
+        if self._global_password_visible:
+            password_display = entry.get('password', '')
             username_display = entry.get('username', '')
+        else:
+            password_display = self.mask_password(entry.get('password', ''))
+            username_display = self.mask_username(entry.get('username', ''))
 
         last_modified = entry.get('updated_at', entry.get('created_at', ''))
         if last_modified:
@@ -58,6 +104,7 @@ class SecureTable(QTreeWidget):
             entry.get('title', ''),
             username_display,
             self.extract_domain(entry.get('url', '')),
+            password_display,
             last_modified
         ])
         item.setData(0, Qt.ItemDataRole.UserRole, entry.get('id', ''))
@@ -83,26 +130,34 @@ class SecureTable(QTreeWidget):
         domain = url_lower.split('/')[0]
         return domain
 
-    def update_entry_username_display(self, item: QTreeWidgetItem):
+    def update_entry_display(self, row):
+        item = self.topLevelItem(row)
         if not item:
             return
+
         username = item.data(1, Qt.ItemDataRole.UserRole)
-        if not self._password_visible:
-            item.setText(1, self.mask_username(username))
-        else:
+        password = item.data(3, Qt.ItemDataRole.UserRole)
+
+        if self._global_password_visible:
             item.setText(1, username)
+            item.setText(3, password)
+        else:
+            item.setText(1, self.mask_username(username))
+            item.setText(3, self.mask_password(password))
 
-    def refresh_all_usernames(self):
+    def refresh_all_displays(self):
         for i in range(self.topLevelItemCount()):
-            item = self.topLevelItem(i)
-            self.update_entry_username_display(item)
+            self.update_entry_display(i)
 
-    def toggle_password_visibility(self, visible: bool):
-        self._password_visible = visible
-        self.refresh_all_usernames()
+    def set_global_password_visibility(self, visible: bool):
+        self._global_password_visible = visible
+        self.refresh_all_displays()
 
-    def is_password_visible(self) -> bool:
-        return self._password_visible
+    def is_global_password_visible(self) -> bool:
+        return self._global_password_visible
+
+    def toggle_global_password_visibility(self):
+        self.set_global_password_visibility(not self._global_password_visible)
 
     def load_entries(self, entries: list):
         self.clear()
@@ -188,6 +243,12 @@ class SecureTable(QTreeWidget):
             delete_all_action.setShortcut(QKeySequence(Qt.Key.Key_Delete))
             menu.addAction(delete_all_action)
 
+        menu.addSeparator()
+
+        toggle_visibility_action = QAction("Toggle Password Visibility (Ctrl+Shift+P)", self)
+        toggle_visibility_action.triggered.connect(self.toggle_global_password_visibility)
+        menu.addAction(toggle_visibility_action)
+
         if menu.actions():
             menu.exec(self.viewport().mapToGlobal(position))
 
@@ -241,18 +302,22 @@ class SecureTable(QTreeWidget):
     def update_entry_in_table(self, entry: dict):
         item = self.get_item_by_id(entry.get('id', ''))
         if item:
-            username_display = self.mask_username(entry.get('username', ''))
-            if self._password_visible:
+            if self._global_password_visible:
                 username_display = entry.get('username', '')
+                password_display = entry.get('password', '')
+            else:
+                username_display = self.mask_username(entry.get('username', ''))
+                password_display = self.mask_password(entry.get('password', ''))
 
             item.setText(0, entry.get('title', ''))
             item.setText(1, username_display)
             item.setText(2, self.extract_domain(entry.get('url', '')))
+            item.setText(3, password_display)
 
             last_modified = entry.get('updated_at', entry.get('created_at', ''))
             if last_modified:
                 last_modified = last_modified[:10] if len(last_modified) > 10 else last_modified
-            item.setText(3, last_modified)
+            item.setText(4, last_modified)
 
             item.setData(0, Qt.ItemDataRole.UserRole, entry.get('id', ''))
             item.setData(1, Qt.ItemDataRole.UserRole, entry.get('username', ''))
@@ -313,5 +378,8 @@ class SecureTable(QTreeWidget):
                 self.itemEditRequested.emit(selected_items[0])
         elif event.key() == Qt.Key.Key_A and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
             self.selectAll()
+        elif event.key() == Qt.Key.Key_P and event.modifiers() == (
+                Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier):
+            self.toggle_global_password_visibility()
         else:
             super().keyPressEvent(event)

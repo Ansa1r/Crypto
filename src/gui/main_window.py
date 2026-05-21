@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QFrame, QHeaderView, QFileDialog, QSpinBox
 )
 from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QAction, QFont
+from PyQt6.QtGui import QAction, QFont, QKeySequence
 
 try:
     from src.core.state_manager import StateManager
@@ -323,6 +323,7 @@ class CryptoSafeMainWindow(QMainWindow):
 
         self.toggle_password_action = QAction("Show Passwords", self)
         self.toggle_password_action.setCheckable(True)
+        self.toggle_password_action.setShortcut(QKeySequence("Ctrl+Shift+P"))
         self.toggle_password_action.triggered.connect(self.toggle_passwords_visibility)
         toolbar.addAction(self.toggle_password_action)
 
@@ -336,11 +337,25 @@ class CryptoSafeMainWindow(QMainWindow):
 
     def toggle_passwords_visibility(self, checked):
         if hasattr(self, 'table'):
-            self.table.toggle_password_visibility(checked)
+            self.table.set_global_password_visibility(checked)
             if checked:
                 self.toggle_password_action.setText("Hide Passwords")
+                self.status_bar.showMessage("Passwords visible", 1000)
             else:
                 self.toggle_password_action.setText("Show Passwords")
+                self.status_bar.showMessage("Passwords hidden", 1000)
+
+    def toggle_global_password_visibility(self):
+        if hasattr(self, 'table'):
+            self.table.toggle_global_password_visibility()
+            is_visible = self.table.is_global_password_visible()
+            self.toggle_password_action.setChecked(is_visible)
+            if is_visible:
+                self.toggle_password_action.setText("Hide Passwords")
+                self.status_bar.showMessage("Passwords visible", 1000)
+            else:
+                self.toggle_password_action.setText("Show Passwords")
+                self.status_bar.showMessage("Passwords hidden", 1000)
 
     def _create_status_bar(self):
         self.status_bar = QStatusBar()
@@ -844,6 +859,13 @@ class CryptoSafeMainWindow(QMainWindow):
             "A secure password manager with modular architecture.\n"
             "Developed as a laboratory work project."
         )
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_P and event.modifiers() == (
+                Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier):
+            self.toggle_global_password_visibility()
+        else:
+            super().keyPressEvent(event)
 
     def closeEvent(self, event):
         if self.current_db_path and not state_manager.is_locked:
