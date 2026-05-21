@@ -438,8 +438,11 @@ class CryptoSafeMainWindow(QMainWindow):
         self.table.itemDeleteRequested.connect(self.delete_single_entry)
         self.table.itemsDeleteRequested.connect(self.delete_multiple_entries)
         self.table.itemShowPasswordRequested.connect(self.show_single_password)
-        self.table.itemDoubleClicked.connect(self.edit_entry)
+        self.table.itemDoubleClicked.connect(self.on_table_double_clicked)
         self.layout.addWidget(self.table)
+
+    def on_table_double_clicked(self, item, column):
+        self.edit_entry_from_item(item)
 
     def copy_username_from_item(self, item):
         username = item.data(1, Qt.ItemDataRole.UserRole)
@@ -464,7 +467,52 @@ class CryptoSafeMainWindow(QMainWindow):
             self.status_bar.showMessage(f"Copied URL: {url}", 2000)
 
     def edit_entry_from_item(self, item):
-        self.edit_entry()
+        if not item:
+            QMessageBox.warning(self, "Warning", "Please select an entry to edit")
+            return
+        entry_id = item.data(0, Qt.ItemDataRole.UserRole)
+        if not entry_id:
+            return
+        entry = next((e for e in self.current_entries if e['id'] == entry_id), None)
+        if not entry:
+            return
+        dialog = EntryDialog(self, entry)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            data = dialog.get_data()
+            try:
+                update_vault_entry(
+                    entry_id=entry_id,
+                    title=data['title'],
+                    username=data['username'],
+                    password=data['password'],
+                    url=data['url'],
+                    notes=data['notes'],
+                    tags=data['tags'],
+                    db_path=self.current_db_path
+                )
+                add_audit_log("EntryUpdated", entry_id, f"Updated entry: {data['title']}", db_path=self.current_db_path)
+                event_bus.publish("EntryUpdated", {"id": entry_id, "title": data['title']})
+
+                updated_entry = {
+                    'id': entry_id,
+                    'title': data['title'],
+                    'username': data['username'],
+                    'password': data['password'],
+                    'url': data['url'],
+                    'notes': data['notes'],
+                    'tags': data['tags'],
+                    'created_at': entry.get('created_at', datetime.now().isoformat()),
+                    'updated_at': datetime.now().isoformat()
+                }
+                for i, e in enumerate(self.current_entries):
+                    if e['id'] == entry_id:
+                        self.current_entries[i] = updated_entry
+                        break
+                self.table.update_entry_deferred(updated_entry)
+
+                QMessageBox.information(self, "Success", "Entry updated successfully")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to update entry:\n{str(e)}")
 
     def delete_single_entry(self, item):
         entry_id = item.data(0, Qt.ItemDataRole.UserRole)
@@ -565,9 +613,9 @@ class CryptoSafeMainWindow(QMainWindow):
 
     def update_status(self):
         if state_manager.is_locked:
-            text = "🔒 Locked | Vault protected"
+            text = "Locked | Vault protected"
         else:
-            text = f"🔓 Unlocked | User: {state_manager.current_user or 'Unknown'}"
+            text = f"Unlocked | User: {state_manager.current_user or 'Unknown'}"
             if self.current_db_path:
                 text += f" | DB: {os.path.basename(self.current_db_path)}"
         self.status_bar.showMessage(text)
@@ -768,13 +816,21 @@ class CryptoSafeMainWindow(QMainWindow):
 
         selected = self.table.selectedItems()
         if not selected:
-            QMessageBox.warning(self, "Warning", "Please select an entry to edit")
-            return
+            item = self.table.currentItem()
+            if not item:
+                QMessageBox.warning(self, "Warning", "Please select an entry to edit")
+                return
+            selected = [item]
 
         entry_id = selected[0].data(0, Qt.ItemDataRole.UserRole)
+        if not entry_id:
+            QMessageBox.warning(self, "Warning", "Could not retrieve entry ID")
+            return
+
         entry = next((e for e in self.current_entries if e['id'] == entry_id), None)
 
         if not entry:
+            QMessageBox.warning(self, "Warning", "Entry not found")
             return
 
         dialog = EntryDialog(self, entry)
