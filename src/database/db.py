@@ -1,4 +1,3 @@
-# src/database/db.py
 import sqlite3
 from pathlib import Path
 import shutil
@@ -90,6 +89,9 @@ def _create_tables(cursor):
             params TEXT
         )
     """)
+
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_vault_entries_created_at ON vault_entries(created_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_vault_entries_updated_at ON vault_entries(updated_at)")
 
 
 def _initialize_default_settings(cursor):
@@ -420,10 +422,10 @@ def has_master_password(db_path=DB_PATH):
 
 def add_vault_entry(title, username, password, url, notes, tags, db_path=DB_PATH):
     from src.core.key_manager import KeyManager
-    from src.core.crypto.aes_gcm import AES256GCMEncryptionService
+    from src.core.vault.encryption_service import EncryptionService
 
     key_manager = KeyManager()
-    encryption_service = AES256GCMEncryptionService(key_manager)
+    encryption_service = EncryptionService(key_manager)
 
     entry_id = str(uuid.uuid4())
     now = datetime.now().isoformat()
@@ -441,8 +443,7 @@ def add_vault_entry(title, username, password, url, notes, tags, db_path=DB_PATH
         'version': 1
     }
 
-    plaintext = json.dumps(payload).encode('utf-8')
-    encrypted_data = encryption_service.encrypt(plaintext)
+    encrypted_data = encryption_service.encrypt_entry(payload)
 
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
@@ -457,10 +458,10 @@ def add_vault_entry(title, username, password, url, notes, tags, db_path=DB_PATH
 
 def get_vault_entry(entry_id, db_path=DB_PATH):
     from src.core.key_manager import KeyManager
-    from src.core.crypto.aes_gcm import AES256GCMEncryptionService
+    from src.core.vault.encryption_service import EncryptionService
 
     key_manager = KeyManager()
-    encryption_service = AES256GCMEncryptionService(key_manager)
+    encryption_service = EncryptionService(key_manager)
 
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
@@ -471,17 +472,15 @@ def get_vault_entry(entry_id, db_path=DB_PATH):
             return None
 
         encrypted_data = row['encrypted_data']
-        plaintext = encryption_service.decrypt(encrypted_data)
-        entry = json.loads(plaintext.decode('utf-8'))
-        return entry
+        return encryption_service.decrypt_entry(encrypted_data)
 
 
 def get_all_vault_entries(db_path=DB_PATH):
     from src.core.key_manager import KeyManager
-    from src.core.crypto.aes_gcm import AES256GCMEncryptionService
+    from src.core.vault.encryption_service import EncryptionService
 
     key_manager = KeyManager()
-    encryption_service = AES256GCMEncryptionService(key_manager)
+    encryption_service = EncryptionService(key_manager)
 
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
@@ -491,12 +490,9 @@ def get_all_vault_entries(db_path=DB_PATH):
         entries = []
         for row in rows:
             encrypted_data = row['encrypted_data']
-            try:
-                plaintext = encryption_service.decrypt(encrypted_data)
-                entry = json.loads(plaintext.decode('utf-8'))
+            entry = encryption_service.decrypt_entry(encrypted_data)
+            if entry:
                 entries.append(entry)
-            except Exception:
-                continue
 
         return entries
 
@@ -504,10 +500,10 @@ def get_all_vault_entries(db_path=DB_PATH):
 def update_vault_entry(entry_id, title=None, username=None, password=None, url=None, notes=None, tags=None,
                        db_path=DB_PATH):
     from src.core.key_manager import KeyManager
-    from src.core.crypto.aes_gcm import AES256GCMEncryptionService
+    from src.core.vault.encryption_service import EncryptionService
 
     key_manager = KeyManager()
-    encryption_service = AES256GCMEncryptionService(key_manager)
+    encryption_service = EncryptionService(key_manager)
 
     existing = get_vault_entry(entry_id, db_path)
     if not existing:
@@ -531,8 +527,7 @@ def update_vault_entry(entry_id, title=None, username=None, password=None, url=N
     existing['updated_at'] = now
     existing['version'] = existing.get('version', 1) + 1
 
-    plaintext = json.dumps(existing).encode('utf-8')
-    encrypted_data = encryption_service.encrypt(plaintext)
+    encrypted_data = encryption_service.encrypt_entry(existing)
 
     with get_connection(db_path) as conn:
         cursor = conn.cursor()

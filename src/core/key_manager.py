@@ -5,7 +5,6 @@ from src.core.crypto.authentication import AuthenticationService
 from src.core.crypto.key_storage import KeyStorage
 from src.core.crypto.multi_key_manager import MultiKeyManager
 from src.core.crypto.auto_lock_manager import AutoLockManager, LockReason
-from src.core.crypto.aes_gcm import AES256GCMEncryptionService
 from src.core.config import ConfigManager
 from datetime import datetime
 
@@ -32,6 +31,7 @@ class KeyManager:
 
     def get_encryption_service(self):
         if self._encryption_service is None:
+            from src.core.crypto.aes_gcm import AES256GCMEncryptionService
             self._encryption_service = AES256GCMEncryptionService(self)
         return self._encryption_service
 
@@ -290,7 +290,6 @@ class KeyManager:
         try:
             if not encrypted_password or encrypted_password == '':
                 return ''
-
             if encryption_service:
                 encrypted_bytes = bytes.fromhex(encrypted_password)
                 decrypted_bytes = encryption_service.decrypt(encrypted_bytes)
@@ -304,7 +303,6 @@ class KeyManager:
         try:
             if not password:
                 return ''
-
             if encryption_service:
                 encrypted_bytes = encryption_service.encrypt(password.encode('utf-8'))
                 return encrypted_bytes.hex()

@@ -4,7 +4,6 @@ from src.core.crypto.key_storage import KeyStorage
 from src.core.crypto.secure_memory import SecureMemory
 from src.core.crypto.abstract import EncryptionService
 from src.core.crypto.aes_gcm import AES256GCMEncryptionService
-from src.core.crypto.placeholder import AES256Placeholder
 
 __all__ = [
     'KeyDerivation',
@@ -12,6 +11,5 @@ __all__ = [
     'KeyStorage',
     'SecureMemory',
     'EncryptionService',
-    'AES256GCMEncryptionService',
-    'AES256Placeholder'
+    'AES256GCMEncryptionService'
 ]

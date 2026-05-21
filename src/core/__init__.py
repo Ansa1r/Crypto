@@ -9,7 +9,6 @@ from src.core.crypto import (
     SecureMemory,
     EncryptionService,
     AES256GCMEncryptionService,
-    AES256Placeholder
 )
 from src.core.vault import (
     EntryManager,
@@ -28,7 +27,6 @@ __all__ = [
     'SecureMemory',
     'EncryptionService',
     'AES256GCMEncryptionService',
-    'AES256Placeholder',
     'EntryManager',
     'VaultEncryptionService',
     'PasswordGenerator'

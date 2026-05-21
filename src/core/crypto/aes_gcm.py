@@ -11,6 +11,8 @@ class AES256GCMEncryptionService(EncryptionService):
         key = self.get_encryption_key()
         if not key:
             raise ValueError("Encryption key not available")
+        if len(key) != 32:
+            raise ValueError(f"Invalid key length: {len(key)} bytes, expected 32")
         return AESGCM(key)
 
     def encrypt(self, data: bytes) -> bytes:
@@ -21,12 +23,10 @@ class AES256GCMEncryptionService(EncryptionService):
 
     def decrypt(self, encrypted_data: bytes) -> bytes:
         if len(encrypted_data) < 28:
-            raise ValueError("Invalid encrypted data")
-
+            raise ValueError("Invalid encrypted data: too short")
         cipher = self._get_cipher()
         nonce = encrypted_data[:12]
         ciphertext = encrypted_data[12:]
-
         try:
             plaintext = cipher.decrypt(nonce, ciphertext, None)
             return plaintext
