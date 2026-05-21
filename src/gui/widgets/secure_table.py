@@ -1,18 +1,23 @@
-from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem, QHeaderView, QMenu, QAbstractItemView
+from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem, QHeaderView, QMenu, QAbstractItemView, QApplication
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QAction, QKeySequence
 
 
 class SecureTable(QTreeWidget):
-    itemCopyRequested = pyqtSignal(object)
+    itemCopyUsernameRequested = pyqtSignal(object)
+    itemCopyPasswordRequested = pyqtSignal(object)
+    itemCopyURLRequested = pyqtSignal(object)
     itemEditRequested = pyqtSignal(object)
     itemDeleteRequested = pyqtSignal(object)
+    itemsDeleteRequested = pyqtSignal(list)
+    itemShowPasswordRequested = pyqtSignal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setHeaderLabels(["Title", "Username", "URL", "Last Modified"])
         self.header().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.header().setStretchLastSection(True)
+        self.header().setSectionsMovable(True)
         self.setSortingEnabled(True)
         self.sortByColumn(0, Qt.SortOrder.AscendingOrder)
         self.setAlternatingRowColors(True)
@@ -20,12 +25,18 @@ class SecureTable(QTreeWidget):
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self.show_context_menu)
+        self.setIndentation(0)
+        self.setRootIsDecorated(False)
+        self.setUniformRowHeights(True)
+
         self._password_visible = False
 
         self.setColumnWidth(0, 200)
         self.setColumnWidth(1, 150)
         self.setColumnWidth(2, 200)
         self.setColumnWidth(3, 120)
+
+        self.installEventFilter(self)
 
     def mask_username(self, username: str) -> str:
         if not username:
@@ -36,9 +47,7 @@ class SecureTable(QTreeWidget):
 
     def add_entry(self, entry: dict) -> QTreeWidgetItem:
         username_display = self.mask_username(entry.get('username', ''))
-        if not self._password_visible:
-            username_display = self.mask_username(entry.get('username', ''))
-        else:
+        if self._password_visible:
             username_display = entry.get('username', '')
 
         last_modified = entry.get('updated_at', entry.get('created_at', ''))
@@ -119,44 +128,93 @@ class SecureTable(QTreeWidget):
     def get_selected_entry_ids(self) -> list:
         return [item.data(0, Qt.ItemDataRole.UserRole) for item in self.selectedItems()]
 
+    def get_selected_count(self) -> int:
+        return len(self.selectedItems())
+
     def show_context_menu(self, position):
+        selected_count = self.get_selected_count()
         item = self.itemAt(position)
-        if not item:
-            return
 
         menu = QMenu()
 
-        copy_action = QAction("Copy Username", self)
-        copy_action.triggered.connect(lambda: self.itemCopyRequested.emit(item))
-        menu.addAction(copy_action)
+        if selected_count == 1 and item:
+            copy_menu = menu.addMenu("Copy")
 
-        copy_password_action = QAction("Copy Password", self)
-        copy_password_action.triggered.connect(lambda: self._on_copy_password(item))
-        menu.addAction(copy_password_action)
+            copy_username_action = QAction("Copy Username", self)
+            copy_username_action.triggered.connect(lambda: self.itemCopyUsernameRequested.emit(item))
+            copy_menu.addAction(copy_username_action)
 
-        menu.addSeparator()
+            copy_password_action = QAction("Copy Password", self)
+            copy_password_action.triggered.connect(lambda: self.itemCopyPasswordRequested.emit(item))
+            copy_menu.addAction(copy_password_action)
 
-        edit_action = QAction("Edit", self)
-        edit_action.triggered.connect(lambda: self.itemEditRequested.emit(item))
-        menu.addAction(edit_action)
+            copy_url_action = QAction("Copy URL", self)
+            copy_url_action.triggered.connect(lambda: self.itemCopyURLRequested.emit(item))
+            copy_menu.addAction(copy_url_action)
 
-        delete_action = QAction("Delete", self)
-        delete_action.triggered.connect(lambda: self.itemDeleteRequested.emit(item))
-        menu.addAction(delete_action)
+            menu.addSeparator()
 
-        menu.addSeparator()
+            show_password_action = QAction("Show/Hide Password", self)
+            show_password_action.triggered.connect(lambda: self.itemShowPasswordRequested.emit(item))
+            menu.addAction(show_password_action)
 
-        show_password_action = QAction("Show/Hide Password", self)
-        show_password_action.triggered.connect(lambda: self.itemCopyRequested.emit(item))
-        menu.addAction(show_password_action)
+            menu.addSeparator()
 
-        menu.exec(self.viewport().mapToGlobal(position))
+            edit_action = QAction("Edit", self)
+            edit_action.setShortcut(QKeySequence(Qt.Key.Key_F2))
+            edit_action.triggered.connect(lambda: self.itemEditRequested.emit(item))
+            menu.addAction(edit_action)
 
-    def _on_copy_password(self, item):
-        password = item.data(3, Qt.ItemDataRole.UserRole)
-        if password:
-            from PyQt6.QtWidgets import QApplication
-            QApplication.clipboard().setText(password)
+            delete_action = QAction("Delete", self)
+            delete_action.setShortcut(QKeySequence(Qt.Key.Key_Delete))
+            delete_action.triggered.connect(lambda: self.itemDeleteRequested.emit(item))
+            menu.addAction(delete_action)
+
+        elif selected_count > 1:
+            copy_menu = menu.addMenu(f"Copy ({selected_count} items)")
+
+            copy_usernames_action = QAction("Copy All Usernames", self)
+            copy_usernames_action.triggered.connect(self._copy_all_usernames)
+            copy_menu.addAction(copy_usernames_action)
+
+            copy_passwords_action = QAction("Copy All Passwords", self)
+            copy_passwords_action.triggered.connect(self._copy_all_passwords)
+            copy_menu.addAction(copy_passwords_action)
+
+            menu.addSeparator()
+
+            delete_all_action = QAction(f"Delete {selected_count} Items", self)
+            delete_all_action.triggered.connect(self._delete_all_selected)
+            delete_all_action.setShortcut(QKeySequence(Qt.Key.Key_Delete))
+            menu.addAction(delete_all_action)
+
+        if menu.actions():
+            menu.exec(self.viewport().mapToGlobal(position))
+
+    def _copy_all_usernames(self):
+        selected_items = self.selectedItems()
+        usernames = []
+        for item in selected_items:
+            username = item.data(1, Qt.ItemDataRole.UserRole)
+            if username:
+                usernames.append(username)
+        if usernames:
+            QApplication.clipboard().setText("\n".join(usernames))
+
+    def _copy_all_passwords(self):
+        selected_items = self.selectedItems()
+        passwords = []
+        for item in selected_items:
+            password = item.data(3, Qt.ItemDataRole.UserRole)
+            if password:
+                passwords.append(password)
+        if passwords:
+            QApplication.clipboard().setText("\n".join(passwords))
+
+    def _delete_all_selected(self):
+        selected_ids = self.get_selected_entry_ids()
+        if selected_ids:
+            self.itemsDeleteRequested.emit(selected_ids)
 
     def get_item_by_id(self, entry_id: str) -> QTreeWidgetItem:
         for i in range(self.topLevelItemCount()):
@@ -172,6 +230,13 @@ class SecureTable(QTreeWidget):
             self.takeTopLevelItem(index)
             return True
         return False
+
+    def remove_entries_by_ids(self, entry_ids: list) -> int:
+        removed = 0
+        for entry_id in entry_ids:
+            if self.remove_entry_by_id(entry_id):
+                removed += 1
+        return removed
 
     def update_entry_in_table(self, entry: dict):
         item = self.get_item_by_id(entry.get('id', ''))
@@ -213,3 +278,40 @@ class SecureTable(QTreeWidget):
             new_order = order
         self.sortItems(column, new_order)
         self.header().setSortIndicator(column, new_order)
+
+    def get_column_state(self) -> dict:
+        state = {
+            'column_widths': [],
+            'column_order': [],
+            'sort_column': self.header().sortIndicatorSection(),
+            'sort_order': self.header().sortIndicatorOrder()
+        }
+        for i in range(self.columnCount()):
+            state['column_widths'].append(self.columnWidth(i))
+            state['column_order'].append(self.header().visualIndex(i))
+        return state
+
+    def set_column_state(self, state: dict):
+        if 'column_widths' in state and len(state['column_widths']) == self.columnCount():
+            for i, width in enumerate(state['column_widths']):
+                if width > 50:
+                    self.setColumnWidth(i, width)
+        if 'column_order' in state and len(state['column_order']) == self.columnCount():
+            for i, visual_index in enumerate(state['column_order']):
+                self.header().moveSection(self.header().visualIndex(i), visual_index)
+        if 'sort_column' in state and 'sort_order' in state:
+            self.sortByColumn(state['sort_column'], state['sort_order'])
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Delete:
+            selected_ids = self.get_selected_entry_ids()
+            if selected_ids:
+                self.itemsDeleteRequested.emit(selected_ids)
+        elif event.key() == Qt.Key.Key_F2:
+            selected_items = self.selectedItems()
+            if len(selected_items) == 1:
+                self.itemEditRequested.emit(selected_items[0])
+        elif event.key() == Qt.Key.Key_A and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+            self.selectAll()
+        else:
+            super().keyPressEvent(event)

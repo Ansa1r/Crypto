@@ -416,26 +416,108 @@ class CryptoSafeMainWindow(QMainWindow):
 
     def _show_unlocked_content(self):
         self.table = SecureTable()
-        self.table.setColumnCount(4)
-        self.table.setHeaderLabels(["Title", "Username", "URL", "Last Modified"])
-        self.table.itemDoubleClicked.connect(self.edit_entry)
-        self.table.itemCopyRequested.connect(self.copy_username_from_item)
+        self.table.itemCopyUsernameRequested.connect(self.copy_username_from_item)
+        self.table.itemCopyPasswordRequested.connect(self.copy_password_from_item)
+        self.table.itemCopyURLRequested.connect(self.copy_url_from_item)
         self.table.itemEditRequested.connect(self.edit_entry_from_item)
-        self.table.itemDeleteRequested.connect(self.delete_entry_from_item)
+        self.table.itemDeleteRequested.connect(self.delete_single_entry)
+        self.table.itemsDeleteRequested.connect(self.delete_multiple_entries)
+        self.table.itemShowPasswordRequested.connect(self.show_single_password)
+        self.table.itemDoubleClicked.connect(self.edit_entry)
         self.layout.addWidget(self.table)
 
     def copy_username_from_item(self, item):
         username = item.data(1, Qt.ItemDataRole.UserRole)
         if username:
-            from PyQt6.QtWidgets import QApplication
             QApplication.clipboard().setText(username)
             self.status_bar.showMessage(f"Copied username: {username}", 2000)
+            add_audit_log("UsernameCopied", item.data(0, Qt.ItemDataRole.UserRole), "Username copied to clipboard",
+                          db_path=self.current_db_path)
+
+    def copy_password_from_item(self, item):
+        password = item.data(3, Qt.ItemDataRole.UserRole)
+        if password:
+            QApplication.clipboard().setText(password)
+            self.status_bar.showMessage(f"Password copied to clipboard (will clear in 15 seconds)", 2000)
+            add_audit_log("PasswordCopied", item.data(0, Qt.ItemDataRole.UserRole), "Password copied to clipboard",
+                          db_path=self.current_db_path)
+
+    def copy_url_from_item(self, item):
+        url = item.data(2, Qt.ItemDataRole.UserRole)
+        if url:
+            QApplication.clipboard().setText(url)
+            self.status_bar.showMessage(f"Copied URL: {url}", 2000)
 
     def edit_entry_from_item(self, item):
         self.edit_entry()
 
-    def delete_entry_from_item(self, item):
-        self.delete_entry()
+    def delete_single_entry(self, item):
+        entry_id = item.data(0, Qt.ItemDataRole.UserRole)
+        title = item.text(0)
+        reply = QMessageBox.question(
+            self, "Confirm Delete",
+            f"Are you sure you want to delete '{title}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                delete_vault_entry(entry_id, self.current_db_path)
+                add_audit_log("EntryDeleted", entry_id, f"Deleted entry: {title}", db_path=self.current_db_path)
+                event_bus.publish("EntryDeleted", {"id": entry_id, "title": title})
+                self.table.remove_entry_by_id(entry_id)
+                self.current_entries = [e for e in self.current_entries if e['id'] != entry_id]
+                self.status_bar.showMessage(f"Deleted: {title}", 2000)
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to delete entry:\n{str(e)}")
+
+    def delete_multiple_entries(self, entry_ids):
+        titles = []
+        for entry_id in entry_ids:
+            entry = next((e for e in self.current_entries if e['id'] == entry_id), None)
+            if entry:
+                titles.append(entry['title'])
+
+        reply = QMessageBox.question(
+            self, "Confirm Delete",
+            f"Are you sure you want to delete {len(entry_ids)} entry(s)?\n\n" + "\n".join(titles[:5]) + (
+                "\n..." if len(titles) > 5 else ""),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                deleted_count = 0
+                for entry_id in entry_ids:
+                    entry = next((e for e in self.current_entries if e['id'] == entry_id), None)
+                    if delete_vault_entry(entry_id, self.current_db_path):
+                        deleted_count += 1
+                        if entry:
+                            add_audit_log("EntryDeleted", entry_id, f"Deleted entry: {entry['title']}",
+                                          db_path=self.current_db_path)
+                            event_bus.publish("EntryDeleted", {"id": entry_id, "title": entry['title']})
+
+                self.table.remove_entries_by_ids(entry_ids)
+                self.current_entries = [e for e in self.current_entries if e['id'] not in entry_ids]
+                self.status_bar.showMessage(f"Deleted {deleted_count} entry(s)", 2000)
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to delete entries:\n{str(e)}")
+
+    def show_single_password(self, item):
+        password = item.data(3, Qt.ItemDataRole.UserRole)
+        if password:
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Password")
+            msg.setText(f"Password for {item.text(0)}:")
+            msg.setInformativeText(password)
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Copy)
+            copy_btn = msg.button(QMessageBox.StandardButton.Copy)
+            copy_btn.setText("Copy to Clipboard")
+
+            if msg.exec() == QMessageBox.StandardButton.Copy:
+                QApplication.clipboard().setText(password)
+                self.status_bar.showMessage("Password copied to clipboard", 2000)
+                add_audit_log("PasswordCopied", item.data(0, Qt.ItemDataRole.UserRole), "Password shown and copied",
+                              db_path=self.current_db_path)
 
     def load_entries(self):
         if not self.current_db_path or not os.path.exists(self.current_db_path):
@@ -684,7 +766,24 @@ class CryptoSafeMainWindow(QMainWindow):
                 )
                 add_audit_log("EntryUpdated", entry_id, f"Updated entry: {data['title']}", db_path=self.current_db_path)
                 event_bus.publish("EntryUpdated", {"id": entry_id, "title": data['title']})
-                self.load_entries()
+
+                updated_entry = {
+                    'id': entry_id,
+                    'title': data['title'],
+                    'username': data['username'],
+                    'password': data['password'],
+                    'url': data['url'],
+                    'notes': data['notes'],
+                    'tags': data['tags'],
+                    'created_at': entry.get('created_at', datetime.now().isoformat()),
+                    'updated_at': datetime.now().isoformat()
+                }
+                self.table.update_entry_in_table(updated_entry)
+                for i, e in enumerate(self.current_entries):
+                    if e['id'] == entry_id:
+                        self.current_entries[i] = updated_entry
+                        break
+
                 QMessageBox.information(self, "Success", "Entry updated successfully")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to update entry:\n{str(e)}")
@@ -707,23 +806,26 @@ class CryptoSafeMainWindow(QMainWindow):
 
         reply = QMessageBox.question(
             self, "Confirm Delete",
-            f"Are you sure you want to delete {len(selected_ids)} entry(s)?\n\n" + "\n".join(titles[:5]),
+            f"Are you sure you want to delete {len(selected_ids)} entry(s)?\n\n" + "\n".join(titles[:5]) + (
+                "\n..." if len(titles) > 5 else ""),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
 
         if reply == QMessageBox.StandardButton.Yes:
             try:
+                deleted_count = 0
                 for entry_id in selected_ids:
-                    delete_vault_entry(entry_id, self.current_db_path)
                     entry = next((e for e in self.current_entries if e['id'] == entry_id), None)
-                    if entry:
-                        add_audit_log("EntryDeleted", entry_id, f"Deleted entry: {entry['title']}",
-                                      db_path=self.current_db_path)
-                        event_bus.publish("EntryDeleted", {"id": entry_id, "title": entry['title']})
+                    if delete_vault_entry(entry_id, self.current_db_path):
+                        deleted_count += 1
+                        if entry:
+                            add_audit_log("EntryDeleted", entry_id, f"Deleted entry: {entry['title']}",
+                                          db_path=self.current_db_path)
+                            event_bus.publish("EntryDeleted", {"id": entry_id, "title": entry['title']})
                     self.table.remove_entry_by_id(entry_id)
 
                 self.current_entries = [e for e in self.current_entries if e['id'] not in selected_ids]
-                QMessageBox.information(self, "Success", f"Deleted {len(selected_ids)} entry(s)")
+                QMessageBox.information(self, "Success", f"Deleted {deleted_count} entry(s)")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to delete entry:\n{str(e)}")
 
@@ -738,7 +840,7 @@ class CryptoSafeMainWindow(QMainWindow):
     def show_about(self):
         QMessageBox.about(
             self, "About CryptoSafe Manager",
-            "CryptoSafe Manager\nVersion 1.0 (Sprint 1)\n\n"
+            "CryptoSafe Manager\nVersion 1.0 (Sprint 3)\n\n"
             "A secure password manager with modular architecture.\n"
             "Developed as a laboratory work project."
         )
