@@ -1,5 +1,7 @@
 import sys
 import os
+from datetime import datetime
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
@@ -319,11 +321,26 @@ class CryptoSafeMainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
+        self.toggle_password_action = QAction("Show Passwords", self)
+        self.toggle_password_action.setCheckable(True)
+        self.toggle_password_action.triggered.connect(self.toggle_passwords_visibility)
+        toolbar.addAction(self.toggle_password_action)
+
+        toolbar.addSeparator()
+
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Search...")
         self.search_box.setMaximumWidth(200)
         self.search_box.textChanged.connect(self.search_entries)
         toolbar.addWidget(self.search_box)
+
+    def toggle_passwords_visibility(self, checked):
+        if hasattr(self, 'table'):
+            self.table.toggle_password_visibility(checked)
+            if checked:
+                self.toggle_password_action.setText("Hide Passwords")
+            else:
+                self.toggle_password_action.setText("Show Passwords")
 
     def _create_status_bar(self):
         self.status_bar = QStatusBar()
@@ -399,30 +416,33 @@ class CryptoSafeMainWindow(QMainWindow):
 
     def _show_unlocked_content(self):
         self.table = SecureTable()
-        self.table.setColumnCount(5)
-        self.table.setHeaderLabels(["Title", "Username", "URL", "Tags", "Last Updated"])
+        self.table.setColumnCount(4)
+        self.table.setHeaderLabels(["Title", "Username", "URL", "Last Modified"])
         self.table.itemDoubleClicked.connect(self.edit_entry)
+        self.table.itemCopyRequested.connect(self.copy_username_from_item)
+        self.table.itemEditRequested.connect(self.edit_entry_from_item)
+        self.table.itemDeleteRequested.connect(self.delete_entry_from_item)
         self.layout.addWidget(self.table)
+
+    def copy_username_from_item(self, item):
+        username = item.data(1, Qt.ItemDataRole.UserRole)
+        if username:
+            from PyQt6.QtWidgets import QApplication
+            QApplication.clipboard().setText(username)
+            self.status_bar.showMessage(f"Copied username: {username}", 2000)
+
+    def edit_entry_from_item(self, item):
+        self.edit_entry()
+
+    def delete_entry_from_item(self, item):
+        self.delete_entry()
 
     def load_entries(self):
         if not self.current_db_path or not os.path.exists(self.current_db_path):
             return
 
         self.current_entries = get_all_vault_entries(self.current_db_path)
-        self.table.clear()
-        self.table.setHeaderLabels(["Title", "Username", "URL", "Tags", "Last Updated"])
-
-        for entry in self.current_entries:
-            item = QTreeWidgetItem([
-                entry.get('title', ''),
-                entry.get('username', ''),
-                entry.get('url', ''),
-                entry.get('tags', ''),
-                entry.get('updated_at', '')[:10] if entry.get('updated_at') else ''
-            ])
-            item.setData(0, Qt.ItemDataRole.UserRole, entry['id'])
-            self.table.addTopLevelItem(item)
-
+        self.table.load_entries(self.current_entries)
         self.status_bar.showMessage(f"Loaded {len(self.current_entries)} entries")
 
     def search_entries(self, text):
@@ -431,20 +451,7 @@ class CryptoSafeMainWindow(QMainWindow):
             return
 
         results = search_vault_entries(text, self.current_db_path)
-        self.table.clear()
-        self.table.setHeaderLabels(["Title", "Username", "URL", "Tags", "Last Updated"])
-
-        for entry in results:
-            item = QTreeWidgetItem([
-                entry.get('title', ''),
-                entry.get('username', ''),
-                entry.get('url', ''),
-                entry.get('tags', ''),
-                entry.get('updated_at', '')[:10] if entry.get('updated_at') else ''
-            ])
-            item.setData(0, Qt.ItemDataRole.UserRole, entry['id'])
-            self.table.addTopLevelItem(item)
-
+        self.table.load_entries(results)
         self.status_bar.showMessage(f"Found {len(results)} entries")
 
     def update_status(self):
@@ -626,7 +633,21 @@ class CryptoSafeMainWindow(QMainWindow):
                 )
                 add_audit_log("EntryAdded", entry_id, f"Added entry: {data['title']}", db_path=self.current_db_path)
                 event_bus.publish("EntryAdded", {"id": entry_id, "title": data['title']})
-                self.load_entries()
+
+                new_entry = {
+                    'id': entry_id,
+                    'title': data['title'],
+                    'username': data['username'],
+                    'password': data['password'],
+                    'url': data['url'],
+                    'notes': data['notes'],
+                    'tags': data['tags'],
+                    'created_at': datetime.now().isoformat(),
+                    'updated_at': datetime.now().isoformat()
+                }
+                self.table.add_entry(new_entry)
+                self.current_entries.append(new_entry)
+
                 QMessageBox.information(self, "Success", "Entry added successfully")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to add entry:\n{str(e)}")
@@ -673,31 +694,36 @@ class CryptoSafeMainWindow(QMainWindow):
             QMessageBox.warning(self, "Warning", "Please unlock the vault first")
             return
 
-        selected = self.table.selectedItems()
-        if not selected:
+        selected_ids = self.table.get_selected_entry_ids()
+        if not selected_ids:
             QMessageBox.warning(self, "Warning", "Please select an entry to delete")
             return
 
-        entry_id = selected[0].data(0, Qt.ItemDataRole.UserRole)
-        entry = next((e for e in self.current_entries if e['id'] == entry_id), None)
-
-        if not entry:
-            return
+        titles = []
+        for entry_id in selected_ids:
+            entry = next((e for e in self.current_entries if e['id'] == entry_id), None)
+            if entry:
+                titles.append(entry['title'])
 
         reply = QMessageBox.question(
             self, "Confirm Delete",
-            f"Are you sure you want to delete '{entry['title']}'?",
+            f"Are you sure you want to delete {len(selected_ids)} entry(s)?\n\n" + "\n".join(titles[:5]),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
 
         if reply == QMessageBox.StandardButton.Yes:
             try:
-                delete_vault_entry(entry_id, self.current_db_path)
-                add_audit_log("EntryDeleted", entry_id, f"Deleted entry: {entry['title']}",
-                              db_path=self.current_db_path)
-                event_bus.publish("EntryDeleted", {"id": entry_id, "title": entry['title']})
-                self.load_entries()
-                QMessageBox.information(self, "Success", "Entry deleted successfully")
+                for entry_id in selected_ids:
+                    delete_vault_entry(entry_id, self.current_db_path)
+                    entry = next((e for e in self.current_entries if e['id'] == entry_id), None)
+                    if entry:
+                        add_audit_log("EntryDeleted", entry_id, f"Deleted entry: {entry['title']}",
+                                      db_path=self.current_db_path)
+                        event_bus.publish("EntryDeleted", {"id": entry_id, "title": entry['title']})
+                    self.table.remove_entry_by_id(entry_id)
+
+                self.current_entries = [e for e in self.current_entries if e['id'] not in selected_ids]
+                QMessageBox.information(self, "Success", f"Deleted {len(selected_ids)} entry(s)")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to delete entry:\n{str(e)}")
 
